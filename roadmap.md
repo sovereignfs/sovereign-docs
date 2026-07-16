@@ -55,7 +55,7 @@ everything v0.1 needs, and more than the previous audit found:
 
 | ID | Task | Depends on | Status |
 | --- | --- | --- | --- |
-| D-00 | **[PLUGIN]** Bootstrap this repo: `package.json`, `tsconfig` (extend `@sovereignfs/tsconfig`), ESLint/Prettier config matching `claude-sv` conventions, `manifest.json` skeleton (id `fs.sovereign.docs`, `type: sovereign`, `runtime: native`, `shell: default`), CI workflow, README pointing to SPEC.md + this roadmap. | — | ⬜ |
+| D-00 | **[PLUGIN]** Bootstrap this repo: `package.json`, `tsconfig` (extend `@sovereignfs/tsconfig`), ESLint/Prettier config matching `claude-sv` conventions, `manifest.json` skeleton (id `fs.sovereign.docs`, `type: sovereign`, `runtime: native`, `shell: default`), CI workflow, README pointing to SPEC.md + this roadmap. | — | ✅ |
 | D-01 | **[PLATFORM]** Re-verify Phase 0 findings are still current (`sdk.connections`/`sdk.storage` still implemented, RFC 0042 still Draft/no code, `sdk.tools` still absent) immediately before starting Phase 2 and Phase 3 — SDK surfaces can change between now and then. No code change unless something regressed. | — | ⬜ |
 
 ---
@@ -160,5 +160,6 @@ valid.
 
 | Date | Change |
 | --- | --- |
+| 2026-07-16 | Completed D-00 bootstrap: `package.json`, `tsconfig.json`, `manifest.json` (`shell: default` — `plugins/ledger` was earlier misread as using `minimal`; it actually uses `default` like every other product plugin), placeholder `EmptyState` page/layout matching Ledger's under-construction convention, CI workflow, README. |
 | 2026-07-16 | Re-verified platform readiness against `claude-sv` code (not RFC frontmatter, which lags reality). Corrected `sdk.storage` from "stub" to implemented (RFC 0044) — retired Phase 4/D-18. Found `sdk.connections` (RFC 0049) implemented and unblocking — redesigned D-02/D-03/D-04/D-13/D-16 to build on it instead of a plugin-local `docs_credentials` table + custom encryption. Found `sdk.e2ee` (RFC 0060) implemented — updated D-23 from a platform-blocked unknown to plugin-only work. Fixed SPEC open-question numbering (D-17/D-19/D-20/D-21/D-16-shared references). |
 | 2026-07-12 | Initial roadmap, derived from SPEC.md build plan + platform audit. |
