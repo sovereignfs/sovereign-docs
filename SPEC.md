@@ -1,7 +1,7 @@
 # Sovereign Docs
 
-**Version:** 0.1\
-**Date:** June 2026\
+**Version:** 0.2\
+**Date:** 16 Jul 2026\
 **Author:** kasunben\
 **Purpose:** Canonical specification for the Sovereign Docs plugin — the single source of truth for its manifest, access model, data model, and build plan.\
 **Status:** Draft
@@ -13,8 +13,9 @@ and share documents, where the documents live in a git repository the user owns
 (their "**Sovereign Drive**"). Each document is a Markdown file under a `docs/` tree;
 drafts live on the platform until the user publishes them to git; revisions are read
 back from git history. It is the personal/shared-document cousin of **Plainwrite**:
-the two share the hard machinery (git-provider adapters, encrypted credentials,
-draft-in-DB → publish-to-git, history-as-revisions) but target different products —
+the two share the hard machinery (git-provider adapters, vaulted credentials via
+`sdk.secrets`/`sdk.connections`, draft-in-DB → publish-to-git, history-as-revisions)
+but target different products —
 Plainwrite edits content for a **static site**, Sovereign Docs is a **Notion/Google-
 Docs-style document workspace** backed by your own repo.
 
@@ -29,22 +30,46 @@ multiple repos are **post-v1**.
 
 The plugin is `type: sovereign` — maintained in a separate external repository.
 
-## Current platform refresh (June 2026)
+## Current platform refresh (verified against `claude-sv` 2026-07-16)
 
-The platform now has several relevant surfaces, and the remaining gaps are
-captured as RFCs:
+**RFC frontmatter `status:` lags reality** — several RFCs below still read
+`Draft` in their own doc file even though the surface is fully implemented.
+The authoritative signal is the ✅ column in `claude-sv`'s `docs/roadmap.md`,
+not the RFC file's status field. Re-verify there before relying on this list.
 
-- Public document pages should use public plugin page routes (RFC 0042).
-- User sharing should use the proposed user-directory SDK (RFC 0041).
-- Git credentials should move to the plugin secret vault (RFC 0043) rather than
-  plugin-local credential crypto once that surface exists.
-- Images/assets should use plugin storage (RFC 0044) unless they intentionally
-  live in the user's git repository.
-- Share alerts can use `sdk.notifications`.
-- Docs should expose read-only data contracts for approved consumers: document
-  metadata, snippets, and revision summaries.
-- Assistant/automation writes such as "create document" or "publish draft"
-  should wait for plugin tool contracts (RFC 0047).
+Implemented and usable now (verified in code, not just doc claims):
+
+- `sdk.directory` (RFC 0041) — real, backed by `requireHost().directory`.
+- `sdk.secrets` (RFC 0043) — real per-secret vault (`create`/`get`/`list`/
+  `update`/`delete`), not plugin-local crypto.
+- **`sdk.connections` (RFC 0049) — real, and directly relevant here.** It is
+  a platform-owned "connect an external account" pattern: connection metadata
+  records (provider, label, status, `secretRef`, arbitrary `metadata`),
+  signed/expiring OAuth state helpers (`createOAuthState`/`verifyOAuthState`),
+  a manifest `connections.providers` declaration (callback path, scopes,
+  instance-level `config.public`/`config.secrets`), and lifecycle calls
+  (`disconnect`/`markUsed`/`markError`). This replaces the git-drive
+  connection design originally sketched below (a plugin-local
+  `docs_credentials` table + hand-rolled AES-256-GCM) — see
+  [Architecture](#architecture-git-layer--db-drafts) and
+  [Data model](#data-model). Both the **PAT** (v0.1) and **OAuth** (v0.2)
+  connect flows should go through `sdk.connections` + `sdk.secrets` from the
+  start, not just the OAuth flow.
+- `sdk.storage` (RFC 0044) — real (`put`/`get`/`delete`/`list`/
+  `getSignedUrl`), not a stub. Images/assets (D-19) have no platform
+  dependency left; use `sdk.storage` unless they intentionally live in the
+  user's git repository.
+- `sdk.notifications` — real; share alerts use it directly.
+- `sdk.data` — real; Docs can expose read-only data contracts (document
+  metadata, snippets, revision summaries) for approved consumers.
+
+Still genuinely absent (confirmed no code, RFC status accurately `Draft`):
+
+- Public plugin page routes (RFC 0042) — no middleware exemption from the
+  session gate exists yet. Public document pages still fall back to "public
+  GitHub repo, link out" until this lands.
+- Plugin tool contracts (RFC 0047) — no `sdk.tools` module exists. Assistant/
+  automation writes ("create document", "publish draft") wait for this.
 
 ## Contents
 
@@ -72,12 +97,12 @@ captured as RFCs:
 | `type`                             | `sovereign`                                                                            |
 | `runtime`                          | `native`                                                                               |
 | `routePrefix`                      | `/docs`                                                                                |
-| `shell`                            | `default` (editor view collapses the chrome)                                           |
+| `shell`                            | `default` (editor view collapses the chrome — consistent with all sibling `type: sovereign` plugins) |
 | `adminOnly`                        | omitted (`false`)                                                                      |
 | `icon`                             | `icon.svg`                                                                             |
-| `permissions`                      | `auth:session`, `db:readWrite`, `mailer:send`, `notifications:send`, `data:provide`    |
+| `permissions`                      | `auth:session`, `db:readWrite`, `mailer:send`, `notifications:send`, `data:provide`, `data:export`, `data:import` |
 | `repository`                       | `https://github.com/sovereignfs/sovereign-docs`                                 |
-| `compatibility.minPlatformVersion` | `0.10.0` plus RFC 0042 for public document routes                                      |
+| `compatibility.minPlatformVersion` | `0.19.0`; public document routes additionally need RFC 0042, not yet landed             |
 
 Proposed `manifest.json`:
 
@@ -102,23 +127,59 @@ Proposed `manifest.json`:
     "db:readWrite",
     "mailer:send",
     "notifications:send",
-    "data:provide"
+    "data:provide",
+    "data:export",
+    "data:import"
   ],
+  "connections": {
+    "providers": [
+      {
+        "id": "github",
+        "title": "GitHub",
+        "callbackPath": "/connections/github/callback",
+        "scopes": ["repo"],
+        "config": {
+          "public": {
+            "clientId": { "label": "Client ID", "env": "GITHUB_CLIENT_ID", "required": true }
+          },
+          "secrets": {
+            "clientSecret": {
+              "label": "Client secret",
+              "env": "GITHUB_CLIENT_SECRET",
+              "required": true
+            }
+          }
+        }
+      }
+    ]
+  },
   "repository": "https://github.com/sovereignfs/sovereign-docs",
   "compatibility": { "minPlatformVersion": "0.19.0" }
 }
 ```
 
-**Shell choice.** A plugin declares one `shell`; the index wants the platform chrome
-but the editor wants a full surface. Sovereign Docs uses `shell: default` and
-**collapses the chrome in the editor view** (layout/CSS). It deliberately does _not_
-depend on `shell: minimal` (RFC 0014, unwired) for v1; if/when minimal lands, the
-editor can move to it.
+No permission entry is needed for `sdk.connections` or `sdk.secrets` — neither
+is in the manifest `permissions` enum; both gate on plugin route context plus
+(for connections) the `connections` declaration above. The `config.public`/
+`config.secrets` block is only needed once the **OAuth** provider exists
+(v0.2, D-16); the v0.1 **PAT** flow still creates a `sdk.connections` record
+(provider `github`, no OAuth state involved) but doesn't need the manifest
+`connections` block until OAuth callback routing is added.
 
-**Secrets.** Instance-level GitHub OAuth client configuration should use
-plugin-scoped env vars. Per-user OAuth/PAT credentials should use the plugin
-secret vault (RFC 0043) once available. A plugin-local AES-GCM fallback is
-acceptable only as an interim implementation with a no-default env key.
+**Shell choice.** Use `shell: default`, with the editor view collapsing the
+chrome (layout/CSS), matching every other `type: sovereign` product plugin
+(Ledger, Plainwrite, Tasks, Wallet, Shopper all use `default`). `shell:
+minimal` (RFC 0014) is implemented and wired, but is only used by the
+`example-minimal` demo plugin in this codebase — not an established product
+convention, so Docs doesn't adopt it. The manifest example above declares
+`"shell": "default"`.
+
+**Secrets.** Instance-level GitHub OAuth client configuration uses the
+`connections.providers[].config.public`/`config.secrets` manifest fields
+(resolved from plugin-scoped env vars or Console-managed overrides — see
+`getProviderConfig()`). Per-user OAuth/PAT credentials use `sdk.secrets` (the
+real vault, RFC 0043) plus `sdk.connections` for the connection record — no
+plugin-local crypto is written.
 
 **Plugin capabilities:** `docs:share` (share within the instance),
 `docs:publish-public` (create a public share), and `docs:publish-git` (write to
@@ -168,10 +229,14 @@ choice as Plainwrite) — no `isomorphic-git`, no server-side clone:
   conflict instead of clobbering.
 
 **Provider adapter (shared with Plainwrite).** A `GitProvider` interface (file
-tree/content, publish single/multi, OAuth URL + code exchange, user info) with a
-`GitHubProvider` implementation in v0.1; GitLab/Gitea follow. This adapter layer
-should be **extracted into a shared package/library** so Sovereign Docs and Plainwrite
-don't duplicate it (Open question).
+tree/content, publish single/multi, user info) with a `GitHubProvider`
+implementation in v0.1; GitLab/Gitea follow. This adapter layer should be
+**extracted into a shared package/library** so Sovereign Docs and Plainwrite
+don't duplicate it (Open question). **OAuth URL + code exchange is not part of
+this adapter** — the browser-facing OAuth handshake (state, callback,
+code-for-token exchange) is handled by `sdk.connections` (see below); the
+`GitProvider` only needs an already-resolved access token to call the REST
+API.
 
 **Draft lifecycle.**
 
@@ -183,13 +248,30 @@ edit → Save  → status: draft      (platform DB only, never lost)
 Drafts live in the platform DB until published, so a network/API failure never loses
 work; publishing is the only operation that touches the remote.
 
-**Credentials & encryption (v1).** The per-user git token (PAT or OAuth access/refresh)
-is stored **encrypted with AES-256-GCM** under an instance env key
-(`<iv_hex>:<ciphertext_hex>`), decrypted in memory only immediately before a provider
-call; the plugin **fails fast at startup if the key is unset** (no-default-secret
-rule). This is **plugin-level** encryption — feasible in v1 and independent of the
-platform's deferred at-rest encryption (RFC 0008 Tier 2). **Only document-content
-E2EE is post-v1**; a write-scoped git token must not sit in plaintext.
+**Credentials & connection lifecycle (v1) — via `sdk.connections` + `sdk.secrets`.**
+No plugin-local encryption is written. The per-user git token (PAT in v0.1;
+OAuth access/refresh in v0.2) is stored with `sdk.secrets.create({ scope: 'user',
+label, value: token, metadata: { provider: 'github' } })`, which returns a
+`secretRef` — the plaintext never touches a plugin table. A
+`sdk.connections.create({ scope: 'user', provider: 'github', label, secretRef,
+metadata: { repoOwner, repoName, branch, basePath } })` record is created
+alongside it; this record (not a plugin-local table) is the source of truth
+for connection status (`connected` / `needs_reauth` / `error` /
+`disconnected`), and drives Account/Console visibility without ever exposing
+the token. `metadata` holds display-only identity (`repoOwner`, `repoName`);
+plugin-specific settings that change independently of the connection
+(`branch`, `base_path`) stay in the plugin-local `docs_drives` row alongside
+`connection_id`, so reading them doesn't require a round trip through
+`sdk.connections`. Before each git call, the plugin resolves the token with
+`sdk.secrets.get(secretRef)`; on API failure, call
+`sdk.connections.markError(id, { error, status: 'needs_reauth' })` with a
+sanitized message (never the raw provider error body, which may echo the
+token). Disconnect calls the GitHub API to revoke first, then
+`sdk.connections.disconnect(id)`. This is the platform's general external-
+connection pattern (RFC 0049) — Sovereign Docs is a consumer, not the reason
+it exists, so no plugin-specific crypto or no-default-secret env key is
+needed. **Document-content E2EE remains post-v1** (`sdk.e2ee`, RFC 0060) —
+orthogonal to how the git token itself is stored.
 
 ## Public sharing
 
@@ -228,8 +310,8 @@ docs/
 
 In the plugin (mirrors the other plugin specs): `app/` (index, editor, view, share,
 drive-config, and the public route), `db/schema.ts` (the `docs_*` tables),
-`app/_lib/` (the git provider adapter, credential crypto, Markdown↔rich-text), and
-`app/_components/`.
+`app/_lib/` (the `GitProvider` adapter, Markdown↔rich-text — no credential
+crypto; that's `sdk.secrets`/`sdk.connections`), and `app/_components/`.
 
 ## Data model
 
@@ -238,8 +320,7 @@ on the members/share tables; the owner row is inserted automatically on creation
 
 | Table                   | Key columns                                                                                                                                            |
 | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `docs_drives`           | `user_id` (PK in v1, one repo/user), `tenant_id`, `provider`, `repo_owner`, `repo_name`, `branch`, `base_path` (`docs`), `created_at`                  |
-| `docs_credentials`      | `user_id` (PK), `tenant_id`, `auth_type` (`oauth`\|`pat`), `access_token_encrypted`, `refresh_token_encrypted?`, `token_expires_at?`, `provider_login` |
+| `docs_drives`           | `user_id` (PK in v1, one repo/user), `tenant_id`, `connection_id` (→ `sdk.connections` record), `branch`, `base_path` (`docs`), `created_at`           |
 | `docs_projects`         | `id`, `tenant_id`, `owner_id`, `name`, `slug` (folder), `created_at`                                                                                   |
 | `docs_documents`        | `id`, `tenant_id`, `owner_id`, `project_id?`, `title`, `slug` (file path), `status` (`draft`\|`published`), `created_at`, `updated_at`                 |
 | `docs_drafts`           | `document_id` + `user_id` (PK), `tenant_id`, `content` (Markdown), `base_sha` (conflict), `updated_at`                                                 |
@@ -251,17 +332,18 @@ v0.1 can scope sharing to documents and add projects later.)
 
 ## SDK dependencies
 
-| SDK surface         | Used for                                           | Status       |
-| ------------------- | -------------------------------------------------- | ------------ |
-| `sdk.auth`          | Current user session                               | Stable       |
-| `sdk.directory`     | Share target picker                                | RFC 0041     |
-| `sdk.db`            | `docs_*` draft, metadata, and share tables         | Stable       |
-| `sdk.mailer`        | Share notification emails                          | Stable       |
-| `sdk.notifications` | In-app/push share alerts                           | Experimental |
-| `sdk.data`          | Read-only document/snippet contracts               | Experimental |
-| `sdk.storage`       | Optional images/assets outside git                 | RFC 0044     |
-| `sdk.secrets`       | Per-user Git credentials                           | RFC 0043     |
-| `sdk.tools`         | Future confirmed create/publish actions            | RFC 0047     |
+| SDK surface         | Used for                                           | Status                        |
+| ------------------- | -------------------------------------------------- | ------------------------------ |
+| `sdk.auth`          | Current user session                               | Stable                         |
+| `sdk.directory`     | Share target picker                                | Implemented (RFC 0041 doc: Draft) |
+| `sdk.db`            | `docs_*` draft, metadata, and share tables         | Stable                         |
+| `sdk.mailer`        | Share notification emails                          | Stable                         |
+| `sdk.notifications` | In-app/push share alerts                           | Implemented                    |
+| `sdk.data`          | Read-only document/snippet contracts               | Implemented                    |
+| `sdk.storage`       | Optional images/assets outside git                 | Implemented (RFC 0044)         |
+| `sdk.secrets`       | Per-user Git token storage (vault)                 | Implemented (RFC 0043 doc: Draft) |
+| `sdk.connections`   | Git connection metadata, OAuth state, lifecycle    | Implemented (RFC 0049 doc: Draft) |
+| `sdk.tools`         | Future confirmed create/publish actions            | Not implemented (RFC 0047)     |
 
 ### Data contracts
 
@@ -278,9 +360,10 @@ Candidate read-only contracts:
 Export includes document metadata, drafts, shares, public-share records, and
 connection metadata. Git credentials are not exported. Import restores drafts
 and metadata additively; remote git contents are not recreated unless the user
-reconnects a drive. User deletion removes drafts and credentials, revokes public
-shares created by the user, and transfers or archives shared documents according
-to membership.
+reconnects a drive. User deletion removes drafts, disconnects the user's
+`sdk.connections` record (which removes the linked `sdk.secrets` vault entry),
+revokes public shares created by the user, and transfers or archives shared
+documents according to membership.
 
 ## UI
 
@@ -292,44 +375,55 @@ to membership.
   public route reuses this read-only layout.
 - **Share dialog** — pick instance users + role; a **public toggle** with
   expiring/permanent.
-- **Drive config** — first-run repo connection (PAT or GitHub OAuth).
+- **Drive config** — first-run repo connection (PAT or GitHub OAuth), backed by
+  `sdk.connections` + `sdk.secrets`; shows connection status and a disconnect
+  action, never the token.
 
 Net-new UI primitives: the Markdown/rich-text editor and the revision/diff view (not
 in `@sovereignfs/ui` today).
 
 ## Build plan
 
-- **v0.1** — drive config (GitHub **PAT**, encrypted), create project/document, the
-  Markdown editor, **Save (draft)** + **Publish (git)**, the index, view/edit toggle,
-  **revisions** from git history; **single repo**; **private + instance sharing**.
-- **v0.2** — **rich-text toggle**; **GitHub OAuth**; **public sharing** via the token
-  registry (**expiring** links) — gated on the public-page platform primitive.
+- **v0.1** — drive config (GitHub **PAT** via `sdk.secrets` + `sdk.connections`),
+  create project/document, the Markdown editor, **Save (draft)** + **Publish (git)**,
+  the index, view/edit toggle, **revisions** from git history; **single repo**;
+  **private + instance sharing**.
+- **v0.2** — **rich-text toggle**; **GitHub OAuth** (via `sdk.connections`
+  OAuth-state helpers + the manifest `connections.providers` declaration);
+  **public sharing** via the token registry (**expiring** links) — gated on the
+  public-page platform primitive.
 - **v0.3** — **permanent** public docs + caching; **conflict resolution** on external
   edits; **images/assets** in documents.
 - **v1.0** — stable.
-- **Post-v1** — **multiple repos**; **document-content E2EE** (`sdk.crypto`); GitLab/
-  Gitea providers.
+- **Post-v1** — **multiple repos**; **document-content E2EE** (client-side key
+  management via `sdk.e2ee`, RFC 0060 — implemented; Docs would still build
+  the per-document encrypt/decrypt on top of it); GitLab/Gitea providers.
 
 ## Open questions
 
-1. **Public-page platform primitive.** Public document routes depend on RFC 0042.
-   Until then, public = public GitHub repo.
-2. **User-directory SDK.** Sharing depends on RFC 0041.
-3. **Image / asset storage.** Git blobs in the repo now, vs `sdk.storage` (RFC
-   0044); decide how relative image paths resolve in both editor and public render.
-4. **Markdown ↔ rich-text fidelity.** Round-tripping without mangling raw Markdown
+1. **Public-page platform primitive.** Public document routes depend on RFC 0042
+   (still Draft, no code). Until then, public = public GitHub repo.
+2. **Image / asset storage.** Git blobs in the repo now, vs `sdk.storage`
+   (implemented, RFC 0044); decide how relative image paths resolve in both
+   editor and public render.
+3. **Markdown ↔ rich-text fidelity.** Round-tripping without mangling raw Markdown
    (frontmatter, code blocks, tables).
-5. **External-edit conflict policy.** Beyond detection via base SHA — overwrite,
+4. **External-edit conflict policy.** Beyond detection via base SHA — overwrite,
    branch, or merge?
-6. **Permanent-public performance.** Cache/pre-render vs render-on-request.
-7. **Shared git layer.** Extracting the provider adapter + credential crypto into a
-   package shared with Plainwrite.
-8. **Secret vault migration.** Decide how plugin-local encrypted credentials
-   migrate to RFC 0043 once available.
-9. **Multi-repo** (post-v1) — drive selection per project/document.
+5. **Permanent-public performance.** Cache/pre-render vs render-on-request.
+6. **Shared git layer.** Extracting the `GitProvider` REST adapter into a package
+   shared with Plainwrite (no credential crypto to extract — that's platform-owned
+   via `sdk.secrets`/`sdk.connections`).
+7. **Multi-repo** (post-v1) — drive selection per project/document.
+
+Resolved since the initial draft (no longer open): user-directory SDK
+(`sdk.directory` is implemented — sharing is unblocked); secret vault
+migration (v0.1 builds directly on the real `sdk.secrets`/`sdk.connections`
+vault from the start, so there's nothing to migrate).
 
 ## Changelog
 
-| Version | Date     | Change            |
-| ------- | -------- | ----------------- |
-| 0.1     | Jun 2026 | Initial proposal. |
+| Version | Date         | Change                                                                                                                                                                                                                                                                                                                                    |
+| ------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 0.2     | 16 Jul 2026  | Re-verified against `claude-sv` platform code (not just RFC status fields). Replaced plugin-local credential encryption with `sdk.connections` (RFC 0049) + `sdk.secrets` (RFC 0043) — both implemented; dropped `docs_credentials` and slimmed `docs_drives`. Corrected `sdk.storage` from "stub" to implemented (RFC 0044). Corrected `shell` from `default`+collapse to `minimal` (RFC 0014, wired) — **then reverted**: `plugins/ledger` was misread as using `shell: minimal`; it actually uses `default`, like every other product plugin (`minimal` is only used by the `example-minimal` demo). Settled back on `shell: default`. Fixed `minPlatformVersion` mismatch (0.19.0). Corrected the post-v1 E2EE reference from a hypothetical `sdk.crypto` to the already-implemented `sdk.e2ee` (RFC 0060). Resolved two open questions (user-directory SDK, secret-vault migration). Added `data:export`/`data:import` to `permissions` — required for D-12's portability handlers; without them the runtime silently skips unregistered/un-permitted export/import resolvers. |
+| 0.1     | Jun 2026     | Initial proposal.                                                                                                                                                                                                                                                                                                                          |
