@@ -120,20 +120,22 @@ export function getGitProvider(provider: string): GitProviderAdapter {
 }
 
 /**
- * Unauthenticated repository lookup for the drive-connection wizard, which
- * runs before any credential is stored — there's nothing to authenticate
- * with yet. Only ever succeeds for a public repository; a private repo and a
- * genuinely nonexistent one are indistinguishable here (both 404), so callers
- * should hedge their copy ("couldn't find it, or it's private") rather than
- * asserting either.
+ * Repository lookup for the drive-connection wizard, used to auto-detect the
+ * default branch so the user doesn't have to type it. `token` is optional —
+ * omitted, this only ever succeeds for a public repository (a private repo
+ * and a genuinely nonexistent one are indistinguishable, both 404); passed
+ * (once the token itself has been validated), it also resolves private
+ * repositories the token can access.
  */
 export async function detectGitHubRepository(
   owner: string,
   repo: string,
+  token?: string | null,
 ): Promise<{ defaultBranch: string } | null> {
   try {
     const body = await fetchGitHubJson<{ default_branch?: string }>(
       `https://api.github.com/repos/${owner}/${repo}`,
+      token,
     );
     return body.default_branch ? { defaultBranch: body.default_branch } : null;
   } catch (error) {
