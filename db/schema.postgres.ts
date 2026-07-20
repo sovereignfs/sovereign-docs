@@ -9,7 +9,7 @@ import { integer, pgTable, primaryKey, text, uniqueIndex } from 'drizzle-orm/pg-
  * only — never used by application query code, which stays on the SQLite-
  * typed schema (see docs/plugin-database.md's serialization rule: plain
  * `integer` for booleans/timestamps here, never native Postgres
- * `boolean`/`bigint`).
+ * `boolean`/`bigint`; enums are plain `text`, not native pg enums).
  */
 
 export const docsDrives = pgTable('docs_drives', {
@@ -37,23 +37,23 @@ export const docsDocuments = pgTable('docs_documents', {
   projectId: text('project_id'),
   title: text('title').notNull(),
   slug: text('slug').notNull(),
-  status: text('status').notNull().default('draft'),
+  content: text('content').notNull().default(''),
+  storage: text('storage').notNull().default('local'),
+  gitPath: text('git_path'),
+  baseSha: text('base_sha'),
+  syncStatus: text('sync_status'),
+  lastSyncedAt: integer('last_synced_at'),
   createdAt: integer('created_at').notNull(),
   updatedAt: integer('updated_at').notNull(),
 });
 
-export const docsDrafts = pgTable(
-  'docs_drafts',
-  {
-    documentId: text('document_id').notNull(),
-    userId: text('user_id').notNull(),
-    tenantId: text('tenant_id').notNull(),
-    content: text('content').notNull().default(''),
-    baseSha: text('base_sha'),
-    updatedAt: integer('updated_at').notNull(),
-  },
-  (t) => [primaryKey({ columns: [t.documentId, t.userId] })],
-);
+export const docsUserPrefs = pgTable('docs_user_prefs', {
+  userId: text('user_id').primaryKey(),
+  tenantId: text('tenant_id').notNull(),
+  defaultView: text('default_view').notNull().default('markdown'),
+  createdAt: integer('created_at').notNull(),
+  updatedAt: integer('updated_at').notNull(),
+});
 
 export const docsDocumentMembers = pgTable(
   'docs_document_members',

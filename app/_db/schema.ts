@@ -13,12 +13,16 @@ import { integer, primaryKey, sqliteTable, text, uniqueIndex } from 'drizzle-orm
  * required, but table names keep the `docs_` prefix from SPEC.md for
  * readability and consistency with the doc's data model table.
  *
- * No `docs_credentials` table: the git token itself is stored via
- * `sdk.secrets`, and connection metadata/lifecycle via `sdk.connections`
- * (RFC 0049) — `docs_drives` only keeps the `connection_id` reference plus
- * the fields (`branch`, `base_path`) that are read on every git call and
- * shouldn't require a round trip through `sdk.connections`. See SPEC.md
- * "Credentials & connection lifecycle".
+ * v0.3 local-first model (SPEC.md "Storage tiers" / "Data model"): a
+ * document's canonical Markdown lives in `docs_documents.content` and autosaves
+ * there. There is no separate draft table — `docs_drafts` was removed with the
+ * git-mandatory draft→publish model it served. Git is an opt-in tier:
+ * `docs_documents.storage` is `local` by default and `git` once the document is
+ * synced to a connected drive, at which point `git_path`/`base_sha`/
+ * `sync_status`/`last_synced_at` track the mirror. `docs_drives` (unchanged)
+ * only exists for users who connect a drive; the git token/connection lifecycle
+ * remains platform-owned via `sdk.secrets`/`sdk.connections` (no
+ * `docs_credentials` table).
  */
 
 export const docsDrives = sqliteTable('docs_drives', {
@@ -46,25 +50,33 @@ export const docsDocuments = sqliteTable('docs_documents', {
   projectId: text('project_id'),
   title: text('title').notNull(),
   slug: text('slug').notNull(),
-  status: text('status', { enum: ['draft', 'published'] })
+  /** Canonical Markdown, autosaved directly (no separate draft row). */
+  content: text('content').notNull().default(''),
+  /** Storage tier: `local` (DB only, counts against the quota) or `git` (mirrored to a drive). */
+  storage: text('storage', { enum: ['local', 'git'] })
     .notNull()
-    .default('draft'),
+    .default('local'),
+  /** Path within the connected repo, once git-backed (e.g. `docs/<project>/<slug>.md`). */
+  gitPath: text('git_path'),
+  /** Last-synced git blob/commit SHA — backs conflict detection on the next sync. */
+  baseSha: text('base_sha'),
+  /** Sync state for git-backed documents; null for local documents. */
+  syncStatus: text('sync_status', { enum: ['synced', 'pending', 'conflict'] }),
+  lastSyncedAt: integer('last_synced_at'),
   createdAt: integer('created_at').notNull(),
   updatedAt: integer('updated_at').notNull(),
 });
 
-export const docsDrafts = sqliteTable(
-  'docs_drafts',
-  {
-    documentId: text('document_id').notNull(),
-    userId: text('user_id').notNull(),
-    tenantId: text('tenant_id').notNull(),
-    content: text('content').notNull().default(''),
-    baseSha: text('base_sha'),
-    updatedAt: integer('updated_at').notNull(),
-  },
-  (t) => [primaryKey({ columns: [t.documentId, t.userId] })],
-);
+export const docsUserPrefs = sqliteTable('docs_user_prefs', {
+  userId: text('user_id').primaryKey(),
+  tenantId: text('tenant_id').notNull(),
+  /** Which editor view opens by default. Markdown-first per SPEC.md. */
+  defaultView: text('default_view', { enum: ['markdown', 'wysiwyg'] })
+    .notNull()
+    .default('markdown'),
+  createdAt: integer('created_at').notNull(),
+  updatedAt: integer('updated_at').notNull(),
+});
 
 export const docsDocumentMembers = sqliteTable(
   'docs_document_members',
@@ -86,17 +98,17 @@ export const docsTables = {
   docsDrives,
   docsProjects,
   docsDocuments,
-  docsDrafts,
+  docsUserPrefs,
   docsDocumentMembers,
 };
 
 export type DocsDrive = InferSelectModel<typeof docsDrives>;
 export type DocsProject = InferSelectModel<typeof docsProjects>;
 export type DocsDocument = InferSelectModel<typeof docsDocuments>;
-export type DocsDraft = InferSelectModel<typeof docsDrafts>;
+export type DocsUserPrefs = InferSelectModel<typeof docsUserPrefs>;
 export type DocsDocumentMember = InferSelectModel<typeof docsDocumentMembers>;
 export type NewDocsDrive = InferInsertModel<typeof docsDrives>;
 export type NewDocsProject = InferInsertModel<typeof docsProjects>;
 export type NewDocsDocument = InferInsertModel<typeof docsDocuments>;
-export type NewDocsDraft = InferInsertModel<typeof docsDrafts>;
+export type NewDocsUserPrefs = InferInsertModel<typeof docsUserPrefs>;
 export type NewDocsDocumentMember = InferInsertModel<typeof docsDocumentMembers>;

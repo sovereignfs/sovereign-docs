@@ -16,19 +16,14 @@ CREATE TABLE `docs_documents` (
 	`project_id` text,
 	`title` text NOT NULL,
 	`slug` text NOT NULL,
-	`status` text DEFAULT 'draft' NOT NULL,
+	`content` text DEFAULT '' NOT NULL,
+	`storage` text DEFAULT 'local' NOT NULL,
+	`git_path` text,
+	`base_sha` text,
+	`sync_status` text,
+	`last_synced_at` integer,
 	`created_at` integer NOT NULL,
 	`updated_at` integer NOT NULL
-);
---> statement-breakpoint
-CREATE TABLE `docs_drafts` (
-	`document_id` text NOT NULL,
-	`user_id` text NOT NULL,
-	`tenant_id` text NOT NULL,
-	`content` text DEFAULT '' NOT NULL,
-	`base_sha` text,
-	`updated_at` integer NOT NULL,
-	PRIMARY KEY(`document_id`, `user_id`)
 );
 --> statement-breakpoint
 CREATE TABLE `docs_drives` (
@@ -47,4 +42,12 @@ CREATE TABLE `docs_projects` (
 	`name` text NOT NULL,
 	`slug` text NOT NULL,
 	`created_at` integer NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE `docs_user_prefs` (
+	`user_id` text PRIMARY KEY NOT NULL,
+	`tenant_id` text NOT NULL,
+	`default_view` text DEFAULT 'markdown' NOT NULL,
+	`created_at` integer NOT NULL,
+	`updated_at` integer NOT NULL
 );

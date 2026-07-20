@@ -75,7 +75,7 @@ interface Store extends Record<string, Row[]> {
   docs_drives: Row[];
   docs_projects: Row[];
   docs_documents: Row[];
-  docs_drafts: Row[];
+  docs_user_prefs: Row[];
   docs_document_members: Row[];
 }
 
@@ -83,7 +83,7 @@ let store: Store = {
   docs_drives: [],
   docs_projects: [],
   docs_documents: [],
-  docs_drafts: [],
+  docs_user_prefs: [],
   docs_document_members: [],
 };
 
@@ -92,7 +92,7 @@ function resetStore() {
     docs_drives: [],
     docs_projects: [],
     docs_documents: [],
-    docs_drafts: [],
+    docs_user_prefs: [],
     docs_document_members: [],
   };
 }
@@ -140,7 +140,7 @@ beforeEach(() => {
 });
 
 describe('portability export', () => {
-  it("exports only the user's own projects, documents, and drafts, with a warning about the drive", async () => {
+  it("exports only the user's own projects and documents (content inline), with a warning about the drive", async () => {
     const { registerPortabilityHandlers } = await import('../portability');
     await registerPortabilityHandlers();
 
@@ -150,11 +150,8 @@ describe('portability export', () => {
       { id: 'proj-2', tenantId: 't1', ownerId: 'other', name: 'Not mine', slug: 'not-mine', createdAt: 1 },
     ];
     store.docs_documents = [
-      { id: 'doc-1', tenantId: 't1', ownerId: 'u1', projectId: 'proj-1', title: 'Onboarding', slug: 'onboarding', status: 'draft', createdAt: 1, updatedAt: 1 },
-      { id: 'doc-2', tenantId: 't1', ownerId: 'other', projectId: 'proj-2', title: 'Not mine', slug: 'not-mine', status: 'draft', createdAt: 1, updatedAt: 1 },
-    ];
-    store.docs_drafts = [
-      { documentId: 'doc-1', userId: 'u1', tenantId: 't1', content: 'Hello', baseSha: null, updatedAt: 1 },
+      { id: 'doc-1', tenantId: 't1', ownerId: 'u1', projectId: 'proj-1', title: 'Onboarding', slug: 'onboarding', content: 'Hello', storage: 'local', gitPath: null, baseSha: null, syncStatus: null, lastSyncedAt: null, createdAt: 1, updatedAt: 1 },
+      { id: 'doc-2', tenantId: 't1', ownerId: 'other', projectId: 'proj-2', title: 'Not mine', slug: 'not-mine', content: 'nope', storage: 'local', gitPath: null, baseSha: null, syncStatus: null, lastSyncedAt: null, createdAt: 1, updatedAt: 1 },
     ];
 
     const section = await capturedExporter.fn?.({
@@ -163,36 +160,35 @@ describe('portability export', () => {
       options: { includeFiles: true },
     });
     expect(section).toBeDefined();
+    expect((section as PluginExportSection).schemaVersion).toBe(2);
 
     const data = (section as PluginExportSection).data as {
       drive: { branch: string } | null;
       projects: { id: string }[];
-      documents: { id: string }[];
-      drafts: { documentId: string }[];
+      documents: { id: string; content: string; storage: string }[];
     };
     expect(data.drive?.branch).toBe('main');
     expect(data.projects.map((p) => p.id)).toEqual(['proj-1']);
     expect(data.documents.map((d) => d.id)).toEqual(['doc-1']);
-    expect(data.drafts.map((d) => d.documentId)).toEqual(['doc-1']);
+    expect(data.documents[0]).toMatchObject({ content: 'Hello', storage: 'local' });
     expect((section as PluginExportSection).warnings?.length).toBeGreaterThan(0);
   });
 });
 
 describe('portability import', () => {
-  it('remaps a document to its project and scopes it to the importing user, without re-creating the drive', async () => {
+  it('remaps a document to its project, scopes it to the importing user as a local doc, without re-creating the drive', async () => {
     const { registerPortabilityHandlers } = await import('../portability');
     await registerPortabilityHandlers();
 
     const section: PluginExportSection = {
       pluginId: 'fs.sovereign.docs',
-      schemaVersion: 1,
+      schemaVersion: 2,
       data: {
         drive: { branch: 'main', basePath: 'docs', createdAt: 1 },
         projects: [{ id: 'src-proj-1', name: 'Handbook', slug: 'handbook', createdAt: 1 }],
         documents: [
-          { id: 'src-doc-1', projectId: 'src-proj-1', title: 'Onboarding', slug: 'onboarding', status: 'draft', createdAt: 1, updatedAt: 1 },
+          { id: 'src-doc-1', projectId: 'src-proj-1', title: 'Onboarding', slug: 'onboarding', content: 'Hello', storage: 'git', createdAt: 1, updatedAt: 1 },
         ],
-        drafts: [{ documentId: 'src-doc-1', content: 'Hello', baseSha: null, updatedAt: 1 }],
         documentMembers: [],
       },
     };
@@ -202,50 +198,49 @@ describe('portability import', () => {
     expect(store.docs_projects).toEqual([
       expect.objectContaining({ id: 'new-src-proj-1', ownerId: 'u2', tenantId: 't1' }),
     ]);
+    // A git-backed document is imported as local (its remote mirror is not re-created), content preserved.
     expect(store.docs_documents).toEqual([
-      expect.objectContaining({ id: 'new-src-doc-1', projectId: 'new-src-proj-1', ownerId: 'u2' }),
-    ]);
-    expect(store.docs_drafts).toEqual([
-      expect.objectContaining({ documentId: 'new-src-doc-1', userId: 'u2' }),
+      expect.objectContaining({
+        id: 'new-src-doc-1',
+        projectId: 'new-src-proj-1',
+        ownerId: 'u2',
+        content: 'Hello',
+        storage: 'local',
+      }),
     ]);
     expect(store.docs_drives).toEqual([]);
   });
 
-  it('skips a draft whose documentId is not part of this export', async () => {
+  it('rejects an export section with a stale schema version', async () => {
     const { registerPortabilityHandlers } = await import('../portability');
     await registerPortabilityHandlers();
 
     const section: PluginExportSection = {
       pluginId: 'fs.sovereign.docs',
       schemaVersion: 1,
-      data: {
-        drive: null,
-        projects: [],
-        documents: [],
-        drafts: [{ documentId: 'missing-doc', content: 'orphan', baseSha: null, updatedAt: 1 }],
-        documentMembers: [],
-      },
+      data: { drive: null, projects: [], documents: [], documentMembers: [] },
     };
 
-    await capturedImporter.fn?.(section, { userId: 'u2', tenantId: 't1', remapId: (id) => `new-${id}` });
-    expect(store.docs_drafts).toEqual([]);
+    await expect(
+      capturedImporter.fn?.(section, { userId: 'u2', tenantId: 't1', remapId: (id) => `new-${id}` }),
+    ).rejects.toThrow(/unrecognized shape/);
   });
 });
 
 describe('portability delete', () => {
-  it("deletes only the user's own projects, documents, drafts, memberships, and drive", async () => {
+  it("deletes only the user's own projects, documents, memberships, drive, and view preferences", async () => {
     const { registerPortabilityHandlers } = await import('../portability');
     await registerPortabilityHandlers();
 
     store.docs_drives = [{ userId: 'u1', tenantId: 't1', connectionId: 'conn-1', branch: 'main', basePath: 'docs', createdAt: 1 }];
     store.docs_projects = [{ id: 'proj-1', tenantId: 't1', ownerId: 'u1', name: 'Mine', slug: 'mine', createdAt: 1 }];
     store.docs_documents = [
-      { id: 'doc-1', tenantId: 't1', ownerId: 'u1', projectId: 'proj-1', title: 'Mine', slug: 'mine', status: 'draft', createdAt: 1, updatedAt: 1 },
-      { id: 'doc-2', tenantId: 't1', ownerId: 'other', projectId: null, title: 'Not mine', slug: 'not-mine', status: 'draft', createdAt: 1, updatedAt: 1 },
+      { id: 'doc-1', tenantId: 't1', ownerId: 'u1', projectId: 'proj-1', title: 'Mine', slug: 'mine', content: 'a', storage: 'local', createdAt: 1, updatedAt: 1 },
+      { id: 'doc-2', tenantId: 't1', ownerId: 'other', projectId: null, title: 'Not mine', slug: 'not-mine', content: 'b', storage: 'local', createdAt: 1, updatedAt: 1 },
     ];
-    store.docs_drafts = [
-      { documentId: 'doc-1', userId: 'u1', tenantId: 't1', content: 'a', baseSha: null, updatedAt: 1 },
-      { documentId: 'doc-2', userId: 'u1', tenantId: 't1', content: 'shared draft', baseSha: null, updatedAt: 1 },
+    store.docs_user_prefs = [
+      { userId: 'u1', tenantId: 't1', defaultView: 'wysiwyg', createdAt: 1, updatedAt: 1 },
+      { userId: 'other', tenantId: 't1', defaultView: 'markdown', createdAt: 1, updatedAt: 1 },
     ];
     store.docs_document_members = [
       { documentId: 'doc-1', userId: 'other', tenantId: 't1', role: 'viewer', invitedBy: 'u1', joinedAt: 1 },
@@ -257,9 +252,10 @@ describe('portability delete', () => {
 
     expect(store.docs_projects).toEqual([]);
     expect(store.docs_documents).toEqual([expect.objectContaining({ id: 'doc-2' })]);
-    expect(store.docs_drafts).toEqual([]);
     expect(store.docs_document_members).toEqual([]);
     expect(store.docs_drives).toEqual([]);
+    // The user's own preference row is removed; another user's is left intact.
+    expect(store.docs_user_prefs).toEqual([expect.objectContaining({ userId: 'other' })]);
     expect(result?.deleted).toBeGreaterThan(0);
   });
 });

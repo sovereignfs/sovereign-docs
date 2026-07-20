@@ -8,14 +8,25 @@ import type {
 } from '@sovereignfs/sdk';
 import { and, eq, inArray, or } from 'drizzle-orm';
 import type { BaseSQLiteDatabase } from 'drizzle-orm/sqlite-core';
-import { docsDocumentMembers, docsDocuments, docsDrafts, docsDrives, docsProjects } from '../_db/schema';
+import {
+  docsDocumentMembers,
+  docsDocuments,
+  docsDrives,
+  docsProjects,
+  docsUserPrefs,
+} from '../_db/schema';
 
 // The SDK intentionally returns an opaque dialect-agnostic DB client.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Db = BaseSQLiteDatabase<'async', any, any>;
 
 const PLUGIN_ID = 'fs.sovereign.docs';
-const EXPORT_SCHEMA_VERSION = 1;
+// v2: local-first model — a document's canonical Markdown now travels in the
+// `documents` array itself (`content`/`storage`), not a separate `drafts`
+// array. `docs_drafts` was dropped (SPEC.md v0.3). Richer additions (user view
+// preferences, git-sync fields) are D-14's remit; this section keeps parity
+// with the restructured schema so export/import/delete stay correct.
+const EXPORT_SCHEMA_VERSION = 2;
 
 /**
  * Registers Docs' export/import/delete participation (RFC 0007 / RFC 0033,
@@ -30,13 +41,14 @@ export async function registerPortabilityHandlers(): Promise<void> {
 }
 
 // ---- Export shape ----
-// A document's *published* content lives in the connected git repository,
-// not this DB — `docs_documents`/`docs_drafts` hold metadata and the
-// in-progress working draft only. `docs_drives.connectionId` names an
-// `sdk.connections` OAuth grant that has no counterpart on another account
-// or instance, so drive config is exported for visibility but not
-// re-created on import (informational only — same treatment as
-// `docsDocumentMembers`, which names other users' accounts).
+// A document's canonical Markdown lives in `docs_documents.content` (local-first
+// model, SPEC.md v0.3), so it travels with the document row here. For a
+// git-backed document the same content is also mirrored to the connected repo;
+// that mirror is not re-created on import (a drive needs a live
+// `sdk.connections` grant). `docs_drives.connectionId` names an `sdk.connections`
+// record with no counterpart on another account or instance, so drive config is
+// exported for visibility but not re-created on import (informational only —
+// same treatment as `docsDocumentMembers`, which names other users' accounts).
 
 interface ExportDrive {
   branch: string;
@@ -56,15 +68,9 @@ interface ExportDocument {
   projectId: string | null;
   title: string;
   slug: string;
-  status: 'draft' | 'published';
-  createdAt: number;
-  updatedAt: number;
-}
-
-interface ExportDraft {
-  documentId: string;
   content: string;
-  baseSha: string | null;
+  storage: 'local' | 'git';
+  createdAt: number;
   updatedAt: number;
 }
 
@@ -80,7 +86,6 @@ interface DocsExportData {
   drive: ExportDrive | null;
   projects: ExportProject[];
   documents: ExportDocument[];
-  drafts: ExportDraft[];
   /** The user's own membership rows, on documents they own or are a member of. Informational only. */
   documentMembers: ExportDocumentMember[];
 }
@@ -89,11 +94,10 @@ async function exportDocsData(ctx: ExportContext): Promise<PluginExportSection> 
   const db = (await sdk.db.getClient()) as Db;
   const { userId, tenantId } = ctx;
 
-  const [driveRows, projectRows, documentRows, draftRows, memberRows] = await Promise.all([
+  const [driveRows, projectRows, documentRows, memberRows] = await Promise.all([
     db.select().from(docsDrives).where(and(eq(docsDrives.tenantId, tenantId), eq(docsDrives.userId, userId))),
     db.select().from(docsProjects).where(and(eq(docsProjects.tenantId, tenantId), eq(docsProjects.ownerId, userId))),
     db.select().from(docsDocuments).where(and(eq(docsDocuments.tenantId, tenantId), eq(docsDocuments.ownerId, userId))),
-    db.select().from(docsDrafts).where(and(eq(docsDrafts.tenantId, tenantId), eq(docsDrafts.userId, userId))),
     db.select().from(docsDocumentMembers).where(and(eq(docsDocumentMembers.tenantId, tenantId), eq(docsDocumentMembers.userId, userId))),
   ]);
 
@@ -108,14 +112,9 @@ async function exportDocsData(ctx: ExportContext): Promise<PluginExportSection> 
       projectId: d.projectId,
       title: d.title,
       slug: d.slug,
-      status: d.status,
-      createdAt: d.createdAt,
-      updatedAt: d.updatedAt,
-    })),
-    drafts: draftRows.map((d) => ({
-      documentId: d.documentId,
       content: d.content,
-      baseSha: d.baseSha,
+      storage: d.storage,
+      createdAt: d.createdAt,
       updatedAt: d.updatedAt,
     })),
     documentMembers: memberRows.map((m) => ({
@@ -135,13 +134,16 @@ async function exportDocsData(ctx: ExportContext): Promise<PluginExportSection> 
 
 // ---- Import ----
 // Additive only. `drive` and `documentMembers` are not re-created — a drive
-// needs a live `sdk.connections` OAuth grant, and a membership row names
-// another user's account with no guaranteed counterpart on this instance.
+// needs a live `sdk.connections` grant, and a membership row names another
+// user's account with no guaranteed counterpart on this instance. Every
+// document is restored as a **local** document (content preserved from the
+// export); a git-backed document's remote mirror is not re-created here, so it
+// starts local until the user reconnects a drive and re-syncs.
 
 function isDocsExportData(value: unknown): value is DocsExportData {
   if (!value || typeof value !== 'object') return false;
   const c = value as Partial<DocsExportData>;
-  return Array.isArray(c.projects) && Array.isArray(c.documents) && Array.isArray(c.drafts);
+  return Array.isArray(c.projects) && Array.isArray(c.documents);
 }
 
 async function importDocsData(section: PluginExportSection, ctx: ImportContext): Promise<void> {
@@ -153,7 +155,6 @@ async function importDocsData(section: PluginExportSection, ctx: ImportContext):
   const ts = Math.floor(Date.now() / 1000);
 
   const originalProjectIds = new Set(data.projects.map((p) => p.id));
-  const originalDocumentIds = new Set(data.documents.map((d) => d.id));
 
   for (const p of data.projects) {
     await db.insert(docsProjects).values({
@@ -174,20 +175,9 @@ async function importDocsData(section: PluginExportSection, ctx: ImportContext):
       projectId: d.projectId && originalProjectIds.has(d.projectId) ? ctx.remapId(d.projectId) : null,
       title: d.title,
       slug: d.slug,
-      status: d.status,
+      content: d.content,
+      storage: 'local',
       createdAt: d.createdAt,
-      updatedAt: ts,
-    });
-  }
-
-  for (const draft of data.drafts) {
-    if (!originalDocumentIds.has(draft.documentId)) continue;
-    await db.insert(docsDrafts).values({
-      documentId: ctx.remapId(draft.documentId),
-      userId: ctx.userId,
-      tenantId: ctx.tenantId,
-      content: draft.content,
-      baseSha: draft.baseSha,
       updatedAt: ts,
     });
   }
@@ -205,54 +195,21 @@ async function deleteAllDocsData(ctx: DeletionContext): Promise<DeletionResult> 
     .where(and(eq(docsDocuments.tenantId, ctx.tenantId), eq(docsDocuments.ownerId, ctx.userId)));
   const documentIds = documentRows.map((d) => d.id);
 
-  if (documentIds.length > 0) {
-    const memberRows = await db
-      .select({ documentId: docsDocumentMembers.documentId })
-      .from(docsDocumentMembers)
-      .where(
-        and(
-          eq(docsDocumentMembers.tenantId, ctx.tenantId),
-          or(inArray(docsDocumentMembers.documentId, documentIds), eq(docsDocumentMembers.userId, ctx.userId)),
-        ),
-      );
-    await db
-      .delete(docsDocumentMembers)
-      .where(
-        and(
-          eq(docsDocumentMembers.tenantId, ctx.tenantId),
-          or(inArray(docsDocumentMembers.documentId, documentIds), eq(docsDocumentMembers.userId, ctx.userId)),
-        ),
-      );
-    deleted += memberRows.length;
-
-    const draftRows = await db
-      .select({ documentId: docsDrafts.documentId })
-      .from(docsDrafts)
-      .where(and(eq(docsDrafts.tenantId, ctx.tenantId), inArray(docsDrafts.documentId, documentIds)));
-    await db
-      .delete(docsDrafts)
-      .where(and(eq(docsDrafts.tenantId, ctx.tenantId), inArray(docsDrafts.documentId, documentIds)));
-    deleted += draftRows.length;
-  } else {
-    const memberRows = await db
-      .select({ documentId: docsDocumentMembers.documentId })
-      .from(docsDocumentMembers)
-      .where(and(eq(docsDocumentMembers.tenantId, ctx.tenantId), eq(docsDocumentMembers.userId, ctx.userId)));
-    await db
-      .delete(docsDocumentMembers)
-      .where(and(eq(docsDocumentMembers.tenantId, ctx.tenantId), eq(docsDocumentMembers.userId, ctx.userId)));
-    deleted += memberRows.length;
-  }
-
-  // The user may also hold drafts on documents owned by someone else.
-  const ownDraftRows = await db
-    .select({ documentId: docsDrafts.documentId })
-    .from(docsDrafts)
-    .where(and(eq(docsDrafts.tenantId, ctx.tenantId), eq(docsDrafts.userId, ctx.userId)));
+  // Membership rows on the user's own documents, plus the user's own
+  // membership rows on documents owned by others. Content lives on the
+  // document row itself now (no per-user draft rows to clean up).
+  const memberFilter =
+    documentIds.length > 0
+      ? or(inArray(docsDocumentMembers.documentId, documentIds), eq(docsDocumentMembers.userId, ctx.userId))
+      : eq(docsDocumentMembers.userId, ctx.userId);
+  const memberRows = await db
+    .select({ documentId: docsDocumentMembers.documentId })
+    .from(docsDocumentMembers)
+    .where(and(eq(docsDocumentMembers.tenantId, ctx.tenantId), memberFilter));
   await db
-    .delete(docsDrafts)
-    .where(and(eq(docsDrafts.tenantId, ctx.tenantId), eq(docsDrafts.userId, ctx.userId)));
-  deleted += ownDraftRows.length;
+    .delete(docsDocumentMembers)
+    .where(and(eq(docsDocumentMembers.tenantId, ctx.tenantId), memberFilter));
+  deleted += memberRows.length;
 
   deleted += documentRows.length;
   await db
@@ -276,6 +233,15 @@ async function deleteAllDocsData(ctx: DeletionContext): Promise<DeletionResult> 
     .delete(docsDrives)
     .where(and(eq(docsDrives.tenantId, ctx.tenantId), eq(docsDrives.userId, ctx.userId)));
   deleted += driveRows.length;
+
+  const prefsRows = await db
+    .select({ userId: docsUserPrefs.userId })
+    .from(docsUserPrefs)
+    .where(and(eq(docsUserPrefs.tenantId, ctx.tenantId), eq(docsUserPrefs.userId, ctx.userId)));
+  await db
+    .delete(docsUserPrefs)
+    .where(and(eq(docsUserPrefs.tenantId, ctx.tenantId), eq(docsUserPrefs.userId, ctx.userId)));
+  deleted += prefsRows.length;
 
   return { deleted };
 }
