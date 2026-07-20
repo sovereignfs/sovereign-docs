@@ -77,3 +77,10 @@ export function resolveDocumentStorage(
     error: `You've reached your ${limit} free documents. Connect a Git repository to create more.`,
   };
 }
+
+export type DocumentMemberRole = 'owner' | 'editor' | 'viewer';
+
+/** Whether a `docs_document_members` role may edit the document's content/title. */
+export function canEditRole(role: DocumentMemberRole | null | undefined): boolean {
+  return role === 'owner' || role === 'editor';
+}

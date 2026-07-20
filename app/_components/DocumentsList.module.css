@@ -62,3 +62,12 @@
   font-size: var(--sv-font-size-sm);
   color: var(--sv-color-text-muted);
 }
+
+.docLink {
+  color: var(--sv-color-text-primary);
+  text-decoration: none;
+}
+
+.docLink:hover {
+  text-decoration: underline;
+}

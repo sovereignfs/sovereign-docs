@@ -10,6 +10,7 @@ import { getContext, now } from './context';
 import {
   DEFAULT_DOCUMENT_TITLE,
   buildGitPath,
+  canEditRole,
   resolveDocumentStorage,
   slugify,
   uniqueSlug,
@@ -197,4 +198,85 @@ export async function listDocumentsOverview(drive: DriveView | null): Promise<Do
     limit,
     driveConnected: drive?.status === 'connected',
   };
+}
+
+export interface DocumentEditorData {
+  id: string;
+  title: string;
+  content: string;
+  storage: 'local' | 'git';
+  /** Whether the current user's membership role permits editing (owner/editor, not viewer). */
+  canEdit: boolean;
+}
+
+/**
+ * Loads a document for the editor route, scoped by `docs_document_members`
+ * rather than `ownerId` directly — today membership is always just the
+ * owner row (auto-inserted at creation), but this is the same check D-13's
+ * shared documents will need, so the editor route doesn't have to change
+ * when sharing lands. Returns `null` if the document doesn't exist, isn't in
+ * this tenant, or the current user has no membership row on it (→ 404).
+ */
+export async function getDocumentForEdit(documentId: string): Promise<DocumentEditorData | null> {
+  const { db, userId, tenantId } = await getContext();
+
+  const [doc] = await db
+    .select({
+      id: docsDocuments.id,
+      title: docsDocuments.title,
+      content: docsDocuments.content,
+      storage: docsDocuments.storage,
+    })
+    .from(docsDocuments)
+    .where(and(eq(docsDocuments.id, documentId), eq(docsDocuments.tenantId, tenantId)));
+  if (!doc) return null;
+
+  const [membership] = await db
+    .select({ role: docsDocumentMembers.role })
+    .from(docsDocumentMembers)
+    .where(
+      and(
+        eq(docsDocumentMembers.documentId, documentId),
+        eq(docsDocumentMembers.tenantId, tenantId),
+        eq(docsDocumentMembers.userId, userId),
+      ),
+    );
+  if (!membership) return null;
+
+  return { ...doc, canEdit: canEditRole(membership.role) };
+}
+
+/**
+ * Autosave endpoint for the editor (D-08). Not `useActionState`-shaped
+ * (no `_prevState`) — called directly from a debounced client effect, same
+ * pattern as Plainwrite's `saveDraft`. Only updates local state; syncing a
+ * git-backed document's content to the remote repo is D-12's "Sync to Git".
+ */
+export async function saveDocument(documentId: string, formData: FormData): Promise<ActionResult> {
+  const { db, userId, tenantId } = await getContext();
+
+  const [membership] = await db
+    .select({ role: docsDocumentMembers.role })
+    .from(docsDocumentMembers)
+    .where(
+      and(
+        eq(docsDocumentMembers.documentId, documentId),
+        eq(docsDocumentMembers.tenantId, tenantId),
+        eq(docsDocumentMembers.userId, userId),
+      ),
+    );
+  if (!membership || !canEditRole(membership.role)) {
+    return { ok: false, error: "You don't have permission to edit this document." };
+  }
+
+  const title = String(formData.get('title') ?? '').trim() || DEFAULT_DOCUMENT_TITLE;
+  const content = String(formData.get('content') ?? '');
+
+  await db
+    .update(docsDocuments)
+    .set({ title, content, updatedAt: now() })
+    .where(and(eq(docsDocuments.id, documentId), eq(docsDocuments.tenantId, tenantId)));
+
+  revalidatePath('/');
+  return { ok: true };
 }

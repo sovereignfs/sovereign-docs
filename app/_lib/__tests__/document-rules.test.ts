@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { buildGitPath, resolveDocumentStorage, slugify, uniqueSlug } from '../document-rules';
+import {
+  buildGitPath,
+  canEditRole,
+  resolveDocumentStorage,
+  slugify,
+  uniqueSlug,
+} from '../document-rules';
 
 describe('slugify', () => {
   it('lowercases and dashes a normal title', () => {
@@ -72,5 +78,18 @@ describe('resolveDocumentStorage', () => {
 
   it('allows a git-backed document with a drive connected, ignoring the local count', () => {
     expect(resolveDocumentStorage('git', 999, 25, true)).toEqual({ ok: true, storage: 'git' });
+  });
+});
+
+describe('canEditRole', () => {
+  it('allows owner and editor roles', () => {
+    expect(canEditRole('owner')).toBe(true);
+    expect(canEditRole('editor')).toBe(true);
+  });
+
+  it('blocks viewer and missing/null roles', () => {
+    expect(canEditRole('viewer')).toBe(false);
+    expect(canEditRole(null)).toBe(false);
+    expect(canEditRole(undefined)).toBe(false);
   });
 });

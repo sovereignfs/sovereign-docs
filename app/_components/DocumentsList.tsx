@@ -1,3 +1,4 @@
+import Link from 'next/link';
 import { Card } from '@sovereignfs/ui';
 import type { DocumentsOverview } from '../_lib/documents';
 import { CreateDocumentDialog } from './CreateDocumentDialog';
@@ -49,7 +50,9 @@ export function DocumentsList({ overview }: { overview: DocumentsOverview }) {
               <ul className={styles.list}>
                 {documents.map((doc) => (
                   <li key={doc.id}>
-                    {doc.title}
+                    <Link href={`/docs/${doc.id}`} className={styles.docLink}>
+                      {doc.title}
+                    </Link>
                     {doc.storage === 'git' ? <span className={styles.badge}>Git</span> : null}
                   </li>
                 ))}
