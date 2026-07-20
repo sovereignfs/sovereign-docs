@@ -3,8 +3,9 @@
 import { revalidatePath } from 'next/cache';
 import { sdk } from '@sovereignfs/sdk';
 import { eq } from 'drizzle-orm';
-import type { BaseSQLiteDatabase } from 'drizzle-orm/sqlite-core';
 import { docsDrives } from '../_db/schema';
+import type { ActionResult } from './context';
+import { getContext, now } from './context';
 import { DEFAULT_BASE_PATH, parseRepository, sanitizeError } from './drive-rules';
 import {
   detectGitHubRepository,
@@ -13,19 +14,7 @@ import {
   type GitRepoRef,
 } from './git-providers';
 
-export type ActionResult = { ok: true; message?: string } | { ok: false; error: string };
-
-type Db = BaseSQLiteDatabase<'async', unknown, Record<string, unknown>>;
-
-async function getContext() {
-  const session = await sdk.auth.requireSession();
-  const db = (await sdk.db.getClient()) as Db;
-  return { db, userId: session.user.id, tenantId: session.user.tenantId };
-}
-
-function now() {
-  return Math.floor(Date.now() / 1000);
-}
+export type { ActionResult };
 
 export interface DriveView {
   connectionId: string;

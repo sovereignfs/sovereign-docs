@@ -1,0 +1,79 @@
+import { canCreateLocalDocument } from './quota';
+
+export const DEFAULT_DOCUMENT_TITLE = 'Untitled document';
+
+/**
+ * Slugifies a name into a URL/path-safe segment (lowercase, dashes, no
+ * leading/trailing dashes). Falls back to `'untitled'` for input that
+ * slugifies to nothing (e.g. all punctuation/emoji).
+ */
+export function slugify(value: string): string {
+  const slug = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return slug || 'untitled';
+}
+
+/** Appends a numeric suffix (`-2`, `-3`, ...) until `base` doesn't collide with `existing`. */
+export function uniqueSlug(base: string, existing: ReadonlySet<string>): string {
+  if (!existing.has(base)) return base;
+  let suffix = 2;
+  while (existing.has(`${base}-${suffix}`)) suffix++;
+  return `${base}-${suffix}`;
+}
+
+/** Builds a git-backed document's path within the repo (SPEC.md "Directory structure"). */
+export function buildGitPath(basePath: string, projectSlug: string | null, slug: string): string {
+  return [basePath, projectSlug, `${slug}.md`].filter((segment): segment is string =>
+    Boolean(segment),
+  ).join('/');
+}
+
+export type DocumentStorage = 'local' | 'git';
+
+export type DocumentStorageDecision =
+  | { ok: true; storage: DocumentStorage }
+  | { ok: false; error: string };
+
+/**
+ * Resolves whether a document-create request may proceed, and under which
+ * storage tier (SPEC.md "Document quota" / "Storage tiers"). `requestedStorage`
+ * is what the create form asked for:
+ * - `'git'` always requires a connected drive, regardless of the local quota.
+ * - `'local'` is quota-gated; at the limit, the error differs depending on
+ *   whether a drive is already connected (offers git-backed instead, which
+ *   doesn't count against the limit) or not (prompts to connect one).
+ */
+export function resolveDocumentStorage(
+  requestedStorage: DocumentStorage,
+  localDocumentCount: number,
+  limit: number,
+  driveConnected: boolean,
+): DocumentStorageDecision {
+  if (requestedStorage === 'git') {
+    if (!driveConnected) {
+      return {
+        ok: false,
+        error: 'Connect a Git repository before creating a git-backed document.',
+      };
+    }
+    return { ok: true, storage: 'git' };
+  }
+
+  if (canCreateLocalDocument(localDocumentCount, limit)) {
+    return { ok: true, storage: 'local' };
+  }
+
+  if (driveConnected) {
+    return {
+      ok: false,
+      error: `You've reached your ${limit} free documents. Create this one as git-backed instead — it won't count against your limit.`,
+    };
+  }
+  return {
+    ok: false,
+    error: `You've reached your ${limit} free documents. Connect a Git repository to create more.`,
+  };
+}
