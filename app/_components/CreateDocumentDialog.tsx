@@ -9,9 +9,15 @@ import styles from './DialogForm.module.css';
 interface CreateDocumentDialogProps {
   projects: { id: string; name: string }[];
   driveConnected: boolean;
+  /** When set, the document is created directly in this project — no picker shown (project page context). */
+  fixedProjectId?: string;
 }
 
-export function CreateDocumentDialog({ projects, driveConnected }: CreateDocumentDialogProps) {
+export function CreateDocumentDialog({
+  projects,
+  driveConnected,
+  fixedProjectId,
+}: CreateDocumentDialogProps) {
   const [open, setOpen] = useState(false);
   const [state, formAction, pending] = useActionState<ActionResult | null, FormData>(
     createDocument,
@@ -44,19 +50,23 @@ export function CreateDocumentDialog({ projects, driveConnected }: CreateDocumen
           <FormField label="Title">
             {(field) => <Input {...field} name="title" placeholder="Untitled document" />}
           </FormField>
-          {projects.length > 0 && (
-            <FormField label="Project" hint="Optional.">
-              {(field) => (
-                <Select {...field} name="projectId" defaultValue="">
-                  <option value="">No project</option>
-                  {projects.map((project) => (
-                    <option key={project.id} value={project.id}>
-                      {project.name}
-                    </option>
-                  ))}
-                </Select>
-              )}
-            </FormField>
+          {fixedProjectId ? (
+            <input type="hidden" name="projectId" value={fixedProjectId} />
+          ) : (
+            projects.length > 0 && (
+              <FormField label="Project" hint="Optional.">
+                {(field) => (
+                  <Select {...field} name="projectId" defaultValue="">
+                    <option value="">No project</option>
+                    {projects.map((project) => (
+                      <option key={project.id} value={project.id}>
+                        {project.name}
+                      </option>
+                    ))}
+                  </Select>
+                )}
+              </FormField>
+            )
           )}
           <div className={styles.actions}>
             <Button type="button" variant="secondary" onClick={() => setOpen(false)}>

@@ -200,6 +200,46 @@ export async function listDocumentsOverview(drive: DriveView | null): Promise<Do
   };
 }
 
+export interface ProjectOverview {
+  project: { id: string; name: string; slug: string };
+  documents: { id: string; title: string; storage: 'local' | 'git' }[];
+}
+
+/**
+ * Reads one project and the documents filed under it, for the project
+ * detail route (`/docs/projects/[projectId]`, D-09). Returns `null` if the
+ * project doesn't exist, isn't in this tenant, or isn't owned by the
+ * current user — the route 404s on that, same as `getDocumentForEdit`.
+ */
+export async function getProjectOverview(projectId: string): Promise<ProjectOverview | null> {
+  const { db, userId, tenantId } = await getContext();
+
+  const [project] = await db
+    .select({ id: docsProjects.id, name: docsProjects.name, slug: docsProjects.slug })
+    .from(docsProjects)
+    .where(
+      and(
+        eq(docsProjects.id, projectId),
+        eq(docsProjects.tenantId, tenantId),
+        eq(docsProjects.ownerId, userId),
+      ),
+    );
+  if (!project) return null;
+
+  const documents = await db
+    .select({ id: docsDocuments.id, title: docsDocuments.title, storage: docsDocuments.storage })
+    .from(docsDocuments)
+    .where(
+      and(
+        eq(docsDocuments.tenantId, tenantId),
+        eq(docsDocuments.ownerId, userId),
+        eq(docsDocuments.projectId, projectId),
+      ),
+    );
+
+  return { project, documents };
+}
+
 export interface DocumentEditorData {
   id: string;
   title: string;
