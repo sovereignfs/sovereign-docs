@@ -84,3 +84,8 @@ export type DocumentMemberRole = 'owner' | 'editor' | 'viewer';
 export function canEditRole(role: DocumentMemberRole | null | undefined): boolean {
   return role === 'owner' || role === 'editor';
 }
+
+/** Type guard for a `docs_document_members.role` value submitted from a share/invite form. */
+export function isDocumentMemberRole(value: string): value is DocumentMemberRole {
+  return value === 'owner' || value === 'editor' || value === 'viewer';
+}

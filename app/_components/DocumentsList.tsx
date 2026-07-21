@@ -9,26 +9,33 @@ import { Tile } from './Tile';
 import styles from './DocumentsList.module.css';
 
 /**
- * Drive-style home (D-09): project + root-level document tiles, search, and
- * the quota indicator. Documents filed under a project appear on that
- * project's own page (`/docs/projects/[projectId]`), not here — same
- * top-level-only convention as Google Drive's "My Drive" root.
+ * Drive-style home (D-09): project + document tiles, search, and the quota
+ * indicator. An **owned** document only shows here when it's root-level
+ * (`projectId === null`) — one filed under a project appears on that
+ * project's own page (`/docs/projects/[projectId]`) instead, same
+ * top-level-only convention as Google Drive's "My Drive" root. A
+ * **shared-with-me** document (D-13) always shows here regardless of its
+ * `projectId`, since the recipient has no access to the owner's project
+ * entity to browse into otherwise — this is its only findable location.
  */
 export function DocumentsList({ overview }: { overview: DocumentsOverview }) {
   const { projects, documents, localCount, limit, driveConnected } = overview;
   const [query, setQuery] = useState('');
 
-  const rootDocuments = useMemo(() => documents.filter((doc) => doc.projectId === null), [documents]);
+  const visibleDocuments = useMemo(
+    () => documents.filter((doc) => (doc.owned ? doc.projectId === null : true)),
+    [documents],
+  );
 
   const normalizedQuery = query.trim().toLowerCase();
   const filteredProjects = normalizedQuery
     ? projects.filter((project) => project.name.toLowerCase().includes(normalizedQuery))
     : projects;
   const filteredDocuments = normalizedQuery
-    ? rootDocuments.filter((doc) => doc.title.toLowerCase().includes(normalizedQuery))
-    : rootDocuments;
+    ? visibleDocuments.filter((doc) => doc.title.toLowerCase().includes(normalizedQuery))
+    : visibleDocuments;
 
-  const isEmptyWorkspace = projects.length === 0 && rootDocuments.length === 0;
+  const isEmptyWorkspace = projects.length === 0 && visibleDocuments.length === 0;
   const hasNoResults = !isEmptyWorkspace && filteredProjects.length === 0 && filteredDocuments.length === 0;
 
   return (
@@ -84,11 +91,7 @@ export function DocumentsList({ overview }: { overview: DocumentsOverview }) {
               <ul className={styles.grid}>
                 {filteredDocuments.map((doc) => (
                   <li key={doc.id}>
-                    <Tile
-                      href={`/docs/${doc.id}`}
-                      label={doc.title}
-                      badge={doc.storage === 'git' ? 'Git' : undefined}
-                    />
+                    <Tile href={`/docs/${doc.id}`} label={doc.title} badge={documentBadge(doc)} />
                   </li>
                 ))}
               </ul>
@@ -98,4 +101,11 @@ export function DocumentsList({ overview }: { overview: DocumentsOverview }) {
       )}
     </div>
   );
+}
+
+function documentBadge(doc: DocumentsOverview['documents'][number]): string | undefined {
+  const parts: string[] = [];
+  if (doc.storage === 'git') parts.push('Git');
+  if (!doc.owned) parts.push('Shared');
+  return parts.length > 0 ? parts.join(' · ') : undefined;
 }

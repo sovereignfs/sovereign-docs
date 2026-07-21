@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildGitPath,
   canEditRole,
+  isDocumentMemberRole,
   resolveDocumentStorage,
   slugify,
   uniqueSlug,
@@ -91,5 +92,19 @@ describe('canEditRole', () => {
     expect(canEditRole('viewer')).toBe(false);
     expect(canEditRole(null)).toBe(false);
     expect(canEditRole(undefined)).toBe(false);
+  });
+});
+
+describe('isDocumentMemberRole', () => {
+  it('accepts owner, editor, and viewer', () => {
+    expect(isDocumentMemberRole('owner')).toBe(true);
+    expect(isDocumentMemberRole('editor')).toBe(true);
+    expect(isDocumentMemberRole('viewer')).toBe(true);
+  });
+
+  it('rejects anything else, including case variants and empty input', () => {
+    expect(isDocumentMemberRole('admin')).toBe(false);
+    expect(isDocumentMemberRole('Owner')).toBe(false);
+    expect(isDocumentMemberRole('')).toBe(false);
   });
 });

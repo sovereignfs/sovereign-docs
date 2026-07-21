@@ -2,7 +2,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { revalidatePath } from 'next/cache';
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { docsDocumentMembers, docsDocuments, docsProjects } from '../_db/schema';
 import { getDrive, type DriveView } from './actions';
 import type { ActionResult } from './context';
@@ -156,6 +156,8 @@ export interface DocumentsOverview {
     slug: string;
     projectId: string | null;
     storage: 'local' | 'git';
+    /** Whether this user owns the document (`docs_documents.ownerId`) vs. has it shared with them (D-13). */
+    owned: boolean;
   }[];
   localCount: number;
   limit: number;
@@ -167,28 +169,55 @@ export interface DocumentsOverview {
  * plugin index page. `drive` is passed in (rather than fetched here) so a
  * caller that already has it (e.g. the index page) doesn't pay for a second
  * `sdk.connections` round trip.
+ *
+ * Documents are read through `docs_document_members` (which already holds
+ * the owner's own auto-inserted row) rather than filtering `docs_documents`
+ * by `ownerId` — otherwise a document shared with this user (D-13) would
+ * have no way to ever surface here, the exact "data that exists but is
+ * filtered out of every view" trap. `owned` disambiguates a membership row
+ * from actual ownership: `docs_documents.ownerId` is fixed at creation, but
+ * a shared member can hold any role (including 'owner') without becoming
+ * the row's owner.
  */
 export async function listDocumentsOverview(drive: DriveView | null): Promise<DocumentsOverview> {
   const { db, userId, tenantId } = await getContext();
 
-  const [projects, documents] = await Promise.all([
+  const [projects, memberships] = await Promise.all([
     db
       .select({ id: docsProjects.id, name: docsProjects.name, slug: docsProjects.slug })
       .from(docsProjects)
       .where(and(eq(docsProjects.tenantId, tenantId), eq(docsProjects.ownerId, userId))),
     db
-      .select({
-        id: docsDocuments.id,
-        title: docsDocuments.title,
-        slug: docsDocuments.slug,
-        projectId: docsDocuments.projectId,
-        storage: docsDocuments.storage,
-      })
-      .from(docsDocuments)
-      .where(and(eq(docsDocuments.tenantId, tenantId), eq(docsDocuments.ownerId, userId))),
+      .select({ documentId: docsDocumentMembers.documentId })
+      .from(docsDocumentMembers)
+      .where(
+        and(eq(docsDocumentMembers.tenantId, tenantId), eq(docsDocumentMembers.userId, userId)),
+      ),
   ]);
 
-  const localCount = documents.filter((doc) => doc.storage === 'local').length;
+  const documentIds = memberships.map((membership) => membership.documentId);
+  const documentRows =
+    documentIds.length > 0
+      ? await db
+          .select({
+            id: docsDocuments.id,
+            title: docsDocuments.title,
+            slug: docsDocuments.slug,
+            projectId: docsDocuments.projectId,
+            storage: docsDocuments.storage,
+            ownerId: docsDocuments.ownerId,
+          })
+          .from(docsDocuments)
+          .where(
+            and(eq(docsDocuments.tenantId, tenantId), inArray(docsDocuments.id, documentIds)),
+          )
+      : [];
+
+  const documents = documentRows.map(({ ownerId, ...doc }) => ({
+    ...doc,
+    owned: ownerId === userId,
+  }));
+  const localCount = documents.filter((doc) => doc.owned && doc.storage === 'local').length;
   const limit = await getFreeDocLimit();
 
   return {
@@ -247,17 +276,18 @@ export interface DocumentEditorData {
   content: string;
   storage: 'local' | 'git';
   syncStatus: 'synced' | 'pending' | 'conflict' | null;
+  /** The current user's `docs_document_members` role — 'owner' gates the Share dialog (D-13). */
+  role: 'owner' | 'editor' | 'viewer';
   /** Whether the current user's membership role permits editing (owner/editor, not viewer). */
   canEdit: boolean;
 }
 
 /**
  * Loads a document for the editor route, scoped by `docs_document_members`
- * rather than `ownerId` directly — today membership is always just the
- * owner row (auto-inserted at creation), but this is the same check D-13's
- * shared documents will need, so the editor route doesn't have to change
- * when sharing lands. Returns `null` if the document doesn't exist, isn't in
- * this tenant, or the current user has no membership row on it (→ 404).
+ * rather than `ownerId` directly — a shared document's viewers/editors
+ * (D-13) go through the same membership row an owner's own auto-inserted
+ * row does. Returns `null` if the document doesn't exist, isn't in this
+ * tenant, or the current user has no membership row on it (→ 404).
  */
 export async function getDocumentForEdit(documentId: string): Promise<DocumentEditorData | null> {
   const { db, userId, tenantId } = await getContext();
@@ -287,7 +317,7 @@ export async function getDocumentForEdit(documentId: string): Promise<DocumentEd
     );
   if (!membership) return null;
 
-  return { ...doc, canEdit: canEditRole(membership.role) };
+  return { ...doc, role: membership.role, canEdit: canEditRole(membership.role) };
 }
 
 /**

@@ -3,11 +3,14 @@
 import Link from 'next/link';
 import { useActionState, useEffect, useState } from 'react';
 import { Button, Input, SegmentedControl, Textarea } from '@sovereignfs/ui';
+import type { DirectoryUser } from '@sovereignfs/sdk';
 import type { ActionResult } from '../_lib/context';
 import type { DocumentRevision } from '../_lib/git-sync';
 import type { DefaultView } from '../_lib/prefs';
+import type { DocumentMemberView } from '../_lib/sharing';
 import { RevisionsPanel } from './RevisionsPanel';
 import { RichTextEditor } from './RichTextEditor';
+import { ShareDialog } from './ShareDialog';
 import styles from './DocumentPage.module.css';
 
 const AUTOSAVE_IDLE_MS = 2000;
@@ -26,12 +29,18 @@ interface DocumentPageProps {
   /** Whether the current user has a connected Git drive — gates offering "Sync to Git" at all. */
   driveConnected: boolean;
   canEdit: boolean;
+  /** Whether the current user's role is 'owner' — gates the Share button/dialog (D-13). */
+  isOwner: boolean;
   defaultView: DefaultView;
   saveAction: (formData: FormData) => Promise<ActionResult>;
   setDefaultViewAction: (view: DefaultView) => Promise<void>;
   syncAction: (prevState: ActionResult | null, formData: FormData) => Promise<ActionResult>;
   listRevisionsAction: () => Promise<DocumentRevision[]>;
   getRevisionContentAction: (sha: string) => Promise<string | null>;
+  listMembersAction: () => Promise<DocumentMemberView[]>;
+  searchUsersAction: (query: string) => Promise<DirectoryUser[]>;
+  inviteMemberAction: (prevState: ActionResult | null, formData: FormData) => Promise<ActionResult>;
+  removeMemberAction: (userId: string) => Promise<ActionResult>;
 }
 
 const VIEW_OPTIONS: { label: string; value: DefaultView }[] = [
@@ -55,9 +64,10 @@ const MODE_OPTIONS: { label: string; value: Mode }[] = [
  * external changes.
  *
  * Opens in **view mode** by default (SPEC.md DOCS-08/DOCS-09) — the edit
- * toggle only renders when `canEdit` is true (permission-gated; today that's
- * always the owner, since sharing is D-13, but the same `docs_document_members`
- * check `getDocumentForEdit` already runs will apply to shared viewers too).
+ * toggle only renders when `canEdit` is true (owner/editor `docs_document_members`
+ * role; a shared viewer sees the read-only surface with no edit affordance).
+ * The Share button/dialog (D-13) is gated tighter still, on `isOwner` — only
+ * an owner manages membership, matching `sovereign-plainwrite`'s precedent.
  *
  * "Sync to Git" (`syncAction`) does double duty as SPEC.md's "create-as-git
  * / mark-as-git" and "Sync to Git" in one action — see git-sync.ts for why a
@@ -72,12 +82,17 @@ export function DocumentPage({
   syncStatus: initialSyncStatus,
   driveConnected,
   canEdit,
+  isOwner,
   defaultView,
   saveAction,
   setDefaultViewAction,
   syncAction,
   listRevisionsAction,
   getRevisionContentAction,
+  listMembersAction,
+  searchUsersAction,
+  inviteMemberAction,
+  removeMemberAction,
 }: DocumentPageProps) {
   const [title, setTitle] = useState(initialTitle);
   const [content, setContent] = useState(initialContent);
@@ -88,6 +103,7 @@ export function DocumentPage({
   const [storageTier, setStorageTier] = useState<Storage>(storage);
   const [syncStatus, setSyncStatus] = useState<SyncStatus>(initialSyncStatus);
   const [revisionsOpen, setRevisionsOpen] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
   const [syncState, syncFormAction, syncPending] = useActionState<ActionResult | null, FormData>(
     syncAction,
     null,
@@ -194,6 +210,11 @@ export function DocumentPage({
           <Button type="button" variant="secondary" size="sm" onClick={handleDownload}>
             Download .md
           </Button>
+          {isOwner && (
+            <Button type="button" variant="secondary" size="sm" onClick={() => setShareOpen(true)}>
+              Share
+            </Button>
+          )}
           {canEdit && (
             <SegmentedControl
               value={mode}
@@ -256,6 +277,17 @@ export function DocumentPage({
         listRevisionsAction={listRevisionsAction}
         getRevisionContentAction={getRevisionContentAction}
       />
+
+      {isOwner && (
+        <ShareDialog
+          open={shareOpen}
+          onClose={() => setShareOpen(false)}
+          listMembersAction={listMembersAction}
+          searchUsersAction={searchUsersAction}
+          inviteAction={inviteMemberAction}
+          removeAction={removeMemberAction}
+        />
+      )}
     </div>
   );
 }

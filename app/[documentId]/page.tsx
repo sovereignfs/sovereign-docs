@@ -4,6 +4,12 @@ import { getDrive } from '../_lib/actions';
 import { getDocumentForEdit, saveDocument } from '../_lib/documents';
 import { getRevisionContent, listDocumentRevisions, syncDocumentToGit } from '../_lib/git-sync';
 import { getDefaultView, setDefaultView } from '../_lib/prefs';
+import {
+  inviteDocumentMember,
+  listDocumentMembers,
+  removeDocumentMember,
+  searchDocumentDirectoryUsers,
+} from '../_lib/sharing';
 
 interface DocumentRouteProps {
   params: Promise<{ documentId: string }>;
@@ -27,12 +33,17 @@ export default async function DocumentRoute({ params }: DocumentRouteProps) {
       syncStatus={document.syncStatus}
       driveConnected={drive?.status === 'connected'}
       canEdit={document.canEdit}
+      isOwner={document.role === 'owner'}
       defaultView={defaultView}
       saveAction={saveDocument.bind(null, documentId)}
       setDefaultViewAction={setDefaultView}
       syncAction={syncDocumentToGit.bind(null, documentId)}
       listRevisionsAction={listDocumentRevisions.bind(null, documentId)}
       getRevisionContentAction={getRevisionContent.bind(null, documentId)}
+      listMembersAction={listDocumentMembers.bind(null, documentId)}
+      searchUsersAction={searchDocumentDirectoryUsers.bind(null, documentId)}
+      inviteMemberAction={inviteDocumentMember.bind(null, documentId)}
+      removeMemberAction={removeDocumentMember.bind(null, documentId)}
     />
   );
 }
