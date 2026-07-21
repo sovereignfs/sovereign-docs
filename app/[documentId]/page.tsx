@@ -1,6 +1,7 @@
 import { notFound } from 'next/navigation';
 import { DocumentEditor } from '../_components/DocumentEditor';
 import { getDocumentForEdit, saveDocument } from '../_lib/documents';
+import { getDefaultView, setDefaultView } from '../_lib/prefs';
 
 interface DocumentPageProps {
   params: Promise<{ documentId: string }>;
@@ -8,7 +9,10 @@ interface DocumentPageProps {
 
 export default async function DocumentPage({ params }: DocumentPageProps) {
   const { documentId } = await params;
-  const document = await getDocumentForEdit(documentId);
+  const [document, defaultView] = await Promise.all([
+    getDocumentForEdit(documentId),
+    getDefaultView(),
+  ]);
   if (!document) notFound();
 
   return (
@@ -17,7 +21,9 @@ export default async function DocumentPage({ params }: DocumentPageProps) {
       content={document.content}
       storage={document.storage}
       canEdit={document.canEdit}
+      defaultView={defaultView}
       saveAction={saveDocument.bind(null, documentId)}
+      setDefaultViewAction={setDefaultView}
     />
   );
 }
