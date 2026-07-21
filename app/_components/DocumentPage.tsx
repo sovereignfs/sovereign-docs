@@ -2,18 +2,20 @@
 
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
-import { Input, SegmentedControl, Textarea } from '@sovereignfs/ui';
+import { Button, Input, SegmentedControl, Textarea } from '@sovereignfs/ui';
 import type { ActionResult } from '../_lib/context';
 import type { DefaultView } from '../_lib/prefs';
 import { RichTextEditor } from './RichTextEditor';
-import styles from './DocumentEditor.module.css';
+import styles from './DocumentPage.module.css';
 
 const AUTOSAVE_IDLE_MS = 2000;
 
 type AutosaveState = 'idle' | 'saving' | 'saved' | 'error';
+type Mode = 'view' | 'edit';
 
-interface DocumentEditorProps {
+interface DocumentPageProps {
   title: string;
+  slug: string;
   content: string;
   storage: 'local' | 'git';
   canEdit: boolean;
@@ -27,31 +29,43 @@ const VIEW_OPTIONS: { label: string; value: DefaultView }[] = [
   { label: 'Rich text', value: 'wysiwyg' },
 ];
 
+const MODE_OPTIONS: { label: string; value: Mode }[] = [
+  { label: 'View', value: 'view' },
+  { label: 'Edit', value: 'edit' },
+];
+
 /**
- * Markdown-canonical editor with autosave (D-08) and a Markdown ⇄ WYSIWYG
- * view toggle (D-10). Markdown (`content`) is always the single source of
- * truth — the WYSIWYG view (RichTextEditor) is just another way to edit the
- * same string, not a separate storage format. The two views are rendered
- * behind a conditional (not both mounted at once), so switching into
- * WYSIWYG always mounts RichTextEditor fresh from whatever `content`
- * currently holds, rather than needing to reactively sync a ProseMirror doc
- * against external changes.
+ * Document viewer + editor (D-08/D-10/D-11). Markdown (`content`) is always
+ * the single source of truth and lives here, not inside a child editor
+ * component — lifted up so switching between the read-only viewer and the
+ * editor never loses in-progress edits, and so the WYSIWYG view (a separate
+ * component reading `content` once at mount) always remounts fresh from
+ * whatever the current value is rather than needing to reactively sync a
+ * ProseMirror doc against external changes.
+ *
+ * Opens in **view mode** by default (SPEC.md DOCS-08/DOCS-09) — the edit
+ * toggle only renders when `canEdit` is true (permission-gated; today that's
+ * always the owner, since sharing is D-13, but the same `docs_document_members`
+ * check `getDocumentForEdit` already runs will apply to shared viewers too).
  */
-export function DocumentEditor({
+export function DocumentPage({
   title: initialTitle,
+  slug,
   content: initialContent,
   storage,
   canEdit,
   defaultView,
   saveAction,
   setDefaultViewAction,
-}: DocumentEditorProps) {
+}: DocumentPageProps) {
   const [title, setTitle] = useState(initialTitle);
   const [content, setContent] = useState(initialContent);
   const [lastSaved, setLastSaved] = useState({ title: initialTitle, content: initialContent });
   const [autosaveState, setAutosaveState] = useState<AutosaveState>('idle');
   const [view, setView] = useState<DefaultView>(defaultView);
+  const [mode, setMode] = useState<Mode>('view');
 
+  const isEditing = canEdit && mode === 'edit';
   const isDirty = title !== lastSaved.title || content !== lastSaved.content;
 
   // Warn on tab close while an edit hasn't been autosaved yet.
@@ -66,7 +80,7 @@ export function DocumentEditor({
   }, [isDirty]);
 
   useEffect(() => {
-    if (!canEdit || !isDirty) return;
+    if (!isEditing || !isDirty) return;
     const timer = setTimeout(() => {
       setAutosaveState('saving');
       const formData = new FormData();
@@ -84,7 +98,7 @@ export function DocumentEditor({
         .catch(() => setAutosaveState('error'));
     }, AUTOSAVE_IDLE_MS);
     return () => clearTimeout(timer);
-  }, [title, content, isDirty, canEdit, saveAction]);
+  }, [title, content, isDirty, isEditing, saveAction]);
 
   function handleViewChange(next: DefaultView) {
     setView(next);
@@ -92,6 +106,16 @@ export function DocumentEditor({
     // preference save just means it doesn't stick next visit, not worth
     // blocking or erroring the editor over.
     void setDefaultViewAction(next);
+  }
+
+  function handleDownload() {
+    const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${slug}.md`;
+    link.click();
+    URL.revokeObjectURL(url);
   }
 
   return (
@@ -102,7 +126,7 @@ export function DocumentEditor({
         </Link>
         <div className={styles.status}>
           {storage === 'git' ? <span className={styles.badge}>Git</span> : null}
-          {canEdit && autosaveState !== 'idle' ? (
+          {isEditing && autosaveState !== 'idle' ? (
             <span
               className={styles.autosaveStatus}
               role={autosaveState === 'error' ? 'alert' : undefined}
@@ -110,6 +134,18 @@ export function DocumentEditor({
               {autosaveLabel(autosaveState)}
             </span>
           ) : null}
+          <Button type="button" variant="secondary" size="sm" onClick={handleDownload}>
+            Download .md
+          </Button>
+          {canEdit && (
+            <SegmentedControl
+              value={mode}
+              onChange={setMode}
+              options={MODE_OPTIONS}
+              size="sm"
+              aria-label="View or edit"
+            />
+          )}
         </div>
       </div>
 
@@ -119,25 +155,28 @@ export function DocumentEditor({
         onChange={(event) => setTitle(event.target.value)}
         placeholder="Untitled document"
         aria-label="Document title"
-        readOnly={!canEdit}
+        readOnly={!isEditing}
       />
 
-      <SegmentedControl
-        value={view}
-        onChange={handleViewChange}
-        options={VIEW_OPTIONS}
-        size="sm"
-        aria-label="Editor view"
-      />
+      {isEditing && (
+        <SegmentedControl
+          value={view}
+          onChange={handleViewChange}
+          options={VIEW_OPTIONS}
+          size="sm"
+          aria-label="Editor view"
+        />
+      )}
 
-      {view === 'markdown' ? (
+      {!isEditing ? (
+        <RichTextEditor content={content} onChange={setContent} readOnly showToolbar={false} />
+      ) : view === 'markdown' ? (
         <Textarea
           className={styles.body}
           value={content}
           onChange={(event) => setContent(event.target.value)}
           placeholder="Start writing in Markdown…"
           aria-label="Document content"
-          readOnly={!canEdit}
           rows={24}
         />
       ) : (
@@ -145,7 +184,7 @@ export function DocumentEditor({
         // from the latest `content` on every markdown→wysiwyg switch — no
         // explicit key needed, and a content-derived key would wrongly
         // remount (losing cursor position) on every keystroke instead.
-        <RichTextEditor content={content} onChange={setContent} readOnly={!canEdit} />
+        <RichTextEditor content={content} onChange={setContent} readOnly={false} />
       )}
     </div>
   );

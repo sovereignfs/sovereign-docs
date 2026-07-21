@@ -12,6 +12,7 @@
   align-items: center;
   justify-content: space-between;
   gap: var(--sv-space-4);
+  flex-wrap: wrap;
 }
 
 .backLink {
@@ -30,6 +31,7 @@
   gap: var(--sv-space-3);
   font-size: var(--sv-font-size-sm);
   color: var(--sv-color-text-muted);
+  flex-wrap: wrap;
 }
 
 .badge {

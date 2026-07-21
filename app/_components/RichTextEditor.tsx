@@ -10,6 +10,8 @@ interface RichTextEditorProps {
   content: string;
   onChange: (markdown: string) => void;
   readOnly: boolean;
+  /** Hidden for the read-only viewer (D-11) — a disabled formatting toolbar has nothing to do there. Defaults to `true`. */
+  showToolbar?: boolean;
 }
 
 /**
@@ -32,7 +34,12 @@ interface RichTextEditorProps {
  * not the library default (`true`): it keeps raw HTML embedded in a
  * document's Markdown from being parsed into live DOM nodes here.
  */
-export function RichTextEditor({ content, onChange, readOnly }: RichTextEditorProps) {
+export function RichTextEditor({
+  content,
+  onChange,
+  readOnly,
+  showToolbar = true,
+}: RichTextEditorProps) {
   const editor = useEditor({
     // Next.js SSR: without this, TipTap tries to render on the server,
     // which produces a hydration mismatch on a component that's genuinely
@@ -65,7 +72,8 @@ export function RichTextEditor({ content, onChange, readOnly }: RichTextEditorPr
 
   return (
     <div className={styles.shell}>
-      <div className={styles.toolbar} role="toolbar" aria-label="Formatting">
+      {showToolbar && (
+        <div className={styles.toolbar} role="toolbar" aria-label="Formatting">
         <ToolbarButton
           label="Bold"
           active={editor.isActive('bold')}
@@ -150,7 +158,8 @@ export function RichTextEditor({ content, onChange, readOnly }: RichTextEditorPr
         >
           {'</>'}
         </ToolbarButton>
-      </div>
+        </div>
+      )}
       <EditorContent editor={editor} className={styles.content} />
     </div>
   );

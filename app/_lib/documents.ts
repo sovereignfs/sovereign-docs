@@ -243,6 +243,7 @@ export async function getProjectOverview(projectId: string): Promise<ProjectOver
 export interface DocumentEditorData {
   id: string;
   title: string;
+  slug: string;
   content: string;
   storage: 'local' | 'git';
   /** Whether the current user's membership role permits editing (owner/editor, not viewer). */
@@ -264,6 +265,7 @@ export async function getDocumentForEdit(documentId: string): Promise<DocumentEd
     .select({
       id: docsDocuments.id,
       title: docsDocuments.title,
+      slug: docsDocuments.slug,
       content: docsDocuments.content,
       storage: docsDocuments.storage,
     })
