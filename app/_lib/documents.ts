@@ -246,6 +246,7 @@ export interface DocumentEditorData {
   slug: string;
   content: string;
   storage: 'local' | 'git';
+  syncStatus: 'synced' | 'pending' | 'conflict' | null;
   /** Whether the current user's membership role permits editing (owner/editor, not viewer). */
   canEdit: boolean;
 }
@@ -268,6 +269,7 @@ export async function getDocumentForEdit(documentId: string): Promise<DocumentEd
       slug: docsDocuments.slug,
       content: docsDocuments.content,
       storage: docsDocuments.storage,
+      syncStatus: docsDocuments.syncStatus,
     })
     .from(docsDocuments)
     .where(and(eq(docsDocuments.id, documentId), eq(docsDocuments.tenantId, tenantId)));
@@ -311,12 +313,26 @@ export async function saveDocument(documentId: string, formData: FormData): Prom
     return { ok: false, error: "You don't have permission to edit this document." };
   }
 
+  const [existing] = await db
+    .select({ storage: docsDocuments.storage })
+    .from(docsDocuments)
+    .where(and(eq(docsDocuments.id, documentId), eq(docsDocuments.tenantId, tenantId)));
+  if (!existing) return { ok: false, error: 'Document not found.' };
+
   const title = String(formData.get('title') ?? '').trim() || DEFAULT_DOCUMENT_TITLE;
   const content = String(formData.get('content') ?? '');
 
   await db
     .update(docsDocuments)
-    .set({ title, content, updatedAt: now() })
+    .set({
+      title,
+      content,
+      updatedAt: now(),
+      // A git-backed document's remote copy only updates on an explicit Sync
+      // to Git (D-12) — autosave here only ever touches the local DB row, so
+      // every autosave of a git-backed document leaves it needing a re-sync.
+      ...(existing.storage === 'git' ? { syncStatus: 'pending' as const } : {}),
+    })
     .where(and(eq(docsDocuments.id, documentId), eq(docsDocuments.tenantId, tenantId)));
 
   revalidatePath('/');

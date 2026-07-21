@@ -1,10 +1,12 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useState } from 'react';
+import { useActionState, useEffect, useState } from 'react';
 import { Button, Input, SegmentedControl, Textarea } from '@sovereignfs/ui';
 import type { ActionResult } from '../_lib/context';
+import type { DocumentRevision } from '../_lib/git-sync';
 import type { DefaultView } from '../_lib/prefs';
+import { RevisionsPanel } from './RevisionsPanel';
 import { RichTextEditor } from './RichTextEditor';
 import styles from './DocumentPage.module.css';
 
@@ -12,16 +14,24 @@ const AUTOSAVE_IDLE_MS = 2000;
 
 type AutosaveState = 'idle' | 'saving' | 'saved' | 'error';
 type Mode = 'view' | 'edit';
+type Storage = 'local' | 'git';
+type SyncStatus = 'synced' | 'pending' | 'conflict' | null;
 
 interface DocumentPageProps {
   title: string;
   slug: string;
   content: string;
-  storage: 'local' | 'git';
+  storage: Storage;
+  syncStatus: SyncStatus;
+  /** Whether the current user has a connected Git drive — gates offering "Sync to Git" at all. */
+  driveConnected: boolean;
   canEdit: boolean;
   defaultView: DefaultView;
   saveAction: (formData: FormData) => Promise<ActionResult>;
   setDefaultViewAction: (view: DefaultView) => Promise<void>;
+  syncAction: (prevState: ActionResult | null, formData: FormData) => Promise<ActionResult>;
+  listRevisionsAction: () => Promise<DocumentRevision[]>;
+  getRevisionContentAction: (sha: string) => Promise<string | null>;
 }
 
 const VIEW_OPTIONS: { label: string; value: DefaultView }[] = [
@@ -35,28 +45,39 @@ const MODE_OPTIONS: { label: string; value: Mode }[] = [
 ];
 
 /**
- * Document viewer + editor (D-08/D-10/D-11). Markdown (`content`) is always
- * the single source of truth and lives here, not inside a child editor
- * component — lifted up so switching between the read-only viewer and the
- * editor never loses in-progress edits, and so the WYSIWYG view (a separate
- * component reading `content` once at mount) always remounts fresh from
- * whatever the current value is rather than needing to reactively sync a
- * ProseMirror doc against external changes.
+ * Document viewer + editor (D-08/D-10/D-11) with the opt-in Git tier
+ * (D-12). Markdown (`content`) is always the single source of truth and
+ * lives here, not inside a child editor component — lifted up so switching
+ * between the read-only viewer and the editor never loses in-progress
+ * edits, and so the WYSIWYG view (a separate component reading `content`
+ * once at mount) always remounts fresh from whatever the current value is
+ * rather than needing to reactively sync a ProseMirror doc against
+ * external changes.
  *
  * Opens in **view mode** by default (SPEC.md DOCS-08/DOCS-09) — the edit
  * toggle only renders when `canEdit` is true (permission-gated; today that's
  * always the owner, since sharing is D-13, but the same `docs_document_members`
  * check `getDocumentForEdit` already runs will apply to shared viewers too).
+ *
+ * "Sync to Git" (`syncAction`) does double duty as SPEC.md's "create-as-git
+ * / mark-as-git" and "Sync to Git" in one action — see git-sync.ts for why a
+ * document is never left half-converted (git storage with nothing actually
+ * pushed).
  */
 export function DocumentPage({
   title: initialTitle,
   slug,
   content: initialContent,
   storage,
+  syncStatus: initialSyncStatus,
+  driveConnected,
   canEdit,
   defaultView,
   saveAction,
   setDefaultViewAction,
+  syncAction,
+  listRevisionsAction,
+  getRevisionContentAction,
 }: DocumentPageProps) {
   const [title, setTitle] = useState(initialTitle);
   const [content, setContent] = useState(initialContent);
@@ -64,9 +85,23 @@ export function DocumentPage({
   const [autosaveState, setAutosaveState] = useState<AutosaveState>('idle');
   const [view, setView] = useState<DefaultView>(defaultView);
   const [mode, setMode] = useState<Mode>('view');
+  const [storageTier, setStorageTier] = useState<Storage>(storage);
+  const [syncStatus, setSyncStatus] = useState<SyncStatus>(initialSyncStatus);
+  const [revisionsOpen, setRevisionsOpen] = useState(false);
+  const [syncState, syncFormAction, syncPending] = useActionState<ActionResult | null, FormData>(
+    syncAction,
+    null,
+  );
 
   const isEditing = canEdit && mode === 'edit';
   const isDirty = title !== lastSaved.title || content !== lastSaved.content;
+
+  useEffect(() => {
+    if (syncState?.ok) {
+      setStorageTier('git');
+      setSyncStatus('synced');
+    }
+  }, [syncState]);
 
   // Warn on tab close while an edit hasn't been autosaved yet.
   useEffect(() => {
@@ -91,6 +126,7 @@ export function DocumentPage({
           if (result.ok) {
             setLastSaved({ title, content });
             setAutosaveState('saved');
+            if (storageTier === 'git') setSyncStatus('pending');
           } else {
             setAutosaveState('error');
           }
@@ -98,7 +134,7 @@ export function DocumentPage({
         .catch(() => setAutosaveState('error'));
     }, AUTOSAVE_IDLE_MS);
     return () => clearTimeout(timer);
-  }, [title, content, isDirty, isEditing, saveAction]);
+  }, [title, content, isDirty, isEditing, saveAction, storageTier]);
 
   function handleViewChange(next: DefaultView) {
     setView(next);
@@ -125,7 +161,11 @@ export function DocumentPage({
           ← Docs
         </Link>
         <div className={styles.status}>
-          {storage === 'git' ? <span className={styles.badge}>Git</span> : null}
+          {storageTier === 'git' ? (
+            <span className={styles.badge} title={syncStatusLabel(syncStatus)}>
+              Git · {syncStatusLabel(syncStatus)}
+            </span>
+          ) : null}
           {isEditing && autosaveState !== 'idle' ? (
             <span
               className={styles.autosaveStatus}
@@ -134,6 +174,23 @@ export function DocumentPage({
               {autosaveLabel(autosaveState)}
             </span>
           ) : null}
+          {canEdit && driveConnected && (
+            <form action={syncFormAction}>
+              <Button type="submit" variant="secondary" size="sm" disabled={syncPending}>
+                {syncPending ? 'Syncing…' : 'Sync to Git'}
+              </Button>
+            </form>
+          )}
+          {storageTier === 'git' && (
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              onClick={() => setRevisionsOpen(true)}
+            >
+              Revisions
+            </Button>
+          )}
           <Button type="button" variant="secondary" size="sm" onClick={handleDownload}>
             Download .md
           </Button>
@@ -148,6 +205,12 @@ export function DocumentPage({
           )}
         </div>
       </div>
+
+      {syncState && !syncState.ok ? (
+        <p className={styles.syncError} role="alert">
+          {syncState.error}
+        </p>
+      ) : null}
 
       <Input
         className={styles.title}
@@ -186,6 +249,13 @@ export function DocumentPage({
         // remount (losing cursor position) on every keystroke instead.
         <RichTextEditor content={content} onChange={setContent} readOnly={false} />
       )}
+
+      <RevisionsPanel
+        open={revisionsOpen}
+        onClose={() => setRevisionsOpen(false)}
+        listRevisionsAction={listRevisionsAction}
+        getRevisionContentAction={getRevisionContentAction}
+      />
     </div>
   );
 }
@@ -195,4 +265,10 @@ function autosaveLabel(state: AutosaveState) {
   if (state === 'saved') return 'All changes saved';
   if (state === 'error') return 'Autosave failed — check your connection.';
   return null;
+}
+
+function syncStatusLabel(status: SyncStatus) {
+  if (status === 'pending') return 'Not yet synced';
+  if (status === 'conflict') return 'Sync conflict';
+  return 'Synced';
 }
