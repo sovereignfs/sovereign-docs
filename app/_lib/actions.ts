@@ -2,7 +2,7 @@
 
 import { revalidatePath } from 'next/cache';
 import { sdk } from '@sovereignfs/sdk';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { docsDrives } from '../_db/schema';
 import type { ActionResult } from './context';
 import { getContext, now } from './context';
@@ -29,8 +29,12 @@ export interface DriveView {
 
 /** Reads the current user's drive + its live connection status, or null if none exists. */
 export async function getDrive(): Promise<DriveView | null> {
-  const { db, userId } = await getContext();
-  const [drive] = await db.select().from(docsDrives).where(eq(docsDrives.userId, userId)).limit(1);
+  const { db, userId, tenantId } = await getContext();
+  const [drive] = await db
+    .select()
+    .from(docsDrives)
+    .where(and(eq(docsDrives.tenantId, tenantId), eq(docsDrives.userId, userId)))
+    .limit(1);
   if (!drive) return null;
 
   const connection = await sdk.connections.get(drive.connectionId);
@@ -99,7 +103,7 @@ export async function connectDrive(
   const [existing] = await db
     .select()
     .from(docsDrives)
-    .where(eq(docsDrives.userId, userId))
+    .where(and(eq(docsDrives.tenantId, tenantId), eq(docsDrives.userId, userId)))
     .limit(1);
 
   const secretLabel = `Docs GitHub token for ${parsed.owner}/${parsed.repo}`;
@@ -142,7 +146,7 @@ export async function connectDrive(
     await db
       .update(docsDrives)
       .set({ connectionId, branch, basePath: DEFAULT_BASE_PATH })
-      .where(eq(docsDrives.userId, userId));
+      .where(and(eq(docsDrives.tenantId, tenantId), eq(docsDrives.userId, userId)));
   } else {
     await db.insert(docsDrives).values({
       userId,
@@ -183,12 +187,18 @@ export async function disconnectDrive(
   _prevState: ActionResult | null,
   _formData: FormData,
 ): Promise<ActionResult> {
-  const { db, userId } = await getContext();
-  const [drive] = await db.select().from(docsDrives).where(eq(docsDrives.userId, userId)).limit(1);
+  const { db, userId, tenantId } = await getContext();
+  const [drive] = await db
+    .select()
+    .from(docsDrives)
+    .where(and(eq(docsDrives.tenantId, tenantId), eq(docsDrives.userId, userId)))
+    .limit(1);
   if (!drive) return { ok: true };
 
   await sdk.connections.disconnect(drive.connectionId);
-  await db.delete(docsDrives).where(eq(docsDrives.userId, userId));
+  await db
+    .delete(docsDrives)
+    .where(and(eq(docsDrives.tenantId, tenantId), eq(docsDrives.userId, userId)));
 
   revalidatePath('/');
   return { ok: true };

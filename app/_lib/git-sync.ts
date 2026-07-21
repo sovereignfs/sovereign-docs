@@ -155,10 +155,21 @@ export async function syncDocumentToGit(
           status: 'needs_reauth',
         });
       } else if (error.status === 409 && doc.storage === 'git') {
+        // A content conflict is about this document, not the connection —
+        // leave the connection's own status alone.
         await db
           .update(docsDocuments)
           .set({ syncStatus: 'conflict', updatedAt: now() })
           .where(and(eq(docsDocuments.id, documentId), eq(docsDocuments.tenantId, tenantId)));
+      } else {
+        // Anything else (404/422/5xx) isn't something a retry of the same
+        // sync fixes on its own — surface it on the connection so the
+        // Settings page's status badge reflects it instead of silently
+        // staying "connected" after a real failure.
+        await sdk.connections.markError(drive.connectionId, {
+          error: { message: sanitizeError(error), status: error.status },
+          status: 'error',
+        });
       }
     }
     return { ok: false, error: sanitizeError(error) };
